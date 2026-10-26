@@ -169,7 +169,7 @@ if (/barcode\s+TEXT\s+UNIQUE/i.test(productSQL)) {
 }
 
 /* Keep existing demo products only when the database is empty. */
-if (db.prepare('SELECT COUNT(*) n FROM products').get().n === 0) {
+if (process.env.NODE_ENV !== 'production' && db.prepare('SELECT COUNT(*) n FROM products').get().n === 0) {
  const add = db.prepare(
   'INSERT INTO products(name,barcode,price,stock,category,store_id) VALUES(?,?,?,?,?,1)'
  );

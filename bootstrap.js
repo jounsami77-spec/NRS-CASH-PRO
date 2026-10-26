@@ -3,57 +3,67 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const DATA = process.env.DATA_DIR || path.join(__dirname,'data');
-fs.mkdirSync(DATA,{recursive:true});
-const db = new DatabaseSync(path.join(DATA,'cashier.db'));
-const hash = password => {
- const salt=crypto.randomBytes(16).toString('hex');
- return salt+':'+crypto.scryptSync(password,salt,64).toString('hex');
-};
-const randomPassword=()=>crypto.randomBytes(12).toString('base64url');
+const DATA = process.env.DATA_DIR || path.join(__dirname, 'data');
+fs.mkdirSync(DATA, { recursive: true });
+
+const db = new DatabaseSync(path.join(DATA, 'cashier.db'));
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return salt + ':' + crypto.scryptSync(password, salt, 64).toString('hex');
+}
 
 try {
- const count=db.prepare('SELECT COUNT(*) n FROM users').get().n;
- if(count) {
-  console.error('توقف: توجد حسابات بالفعل. لم يتم إنشاء أو تغيير أي حساب.');
-  process.exitCode=1;
- } else {
-  const stores=db.prepare('SELECT id,name FROM stores ORDER BY id').all();
-  if(!stores.length) throw new Error('لا توجد محلات في قاعدة البيانات');
-  const credentials=[];
-  const adminPassword=randomPassword();
-  db.prepare('INSERT INTO users(store_id,username,password_hash,role) VALUES(NULL,?,?,?)')
-   .run('admin',hash(adminPassword),'super_admin');
-  credentials.push({role:'مدير عام',store:'كل المحلات',username:'admin',password:adminPassword});
+  db.exec('PRAGMA foreign_keys=ON');
 
-  const insert=db.prepare('INSERT INTO users(store_id,username,password_hash,role) VALUES(?,?,?,?)');
-  for(const store of stores) {
-   let username='store'+String(store.id).padStart(2,'0');
-   while(db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) username+='x';
-   const password=randomPassword();
-   insert.run(store.id,username,hash(password),'store_owner');
-   credentials.push({role:'صاحب محل',store:store.name,username,password});
-   const sub=db.prepare('SELECT id FROM subscriptions WHERE store_id=? ORDER BY id DESC LIMIT 1').get(store.id);
-   if(!sub) db.prepare("INSERT INTO subscriptions(store_id,plan,status) VALUES(?,'monthly','pending')").run(store.id);
+  // السماح بإنشاء المدير الأول دون وجود متجر.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stores (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','suspended')),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      business_type TEXT NOT NULL DEFAULT 'grocery'
+    );
+
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      store_id INTEGER,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL
+        CHECK(role IN ('super_admin','store_owner','cashier')),
+      active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(store_id) REFERENCES stores(id)
+    );
+  `);
+
+  const existing = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+
+  // لا نغيّر حسابات موجودة عند إعادة تشغيل Railway.
+  if (existing > 0) {
+    console.log('توجد حسابات بالفعل؛ لم يتم تغيير أي حساب.');
+  } else {
+    const password = process.env.INITIAL_ADMIN_PASSWORD;
+
+    if (!password || password.length < 10) {
+      throw new Error(
+        'يلزم ضبط INITIAL_ADMIN_PASSWORD بطول 10 أحرف على الأقل.'
+      );
+    }
+
+    db.prepare(`
+      INSERT INTO users (store_id, username, password_hash, role, active)
+      VALUES (NULL, 'admin', ?, 'super_admin', 1)
+    `).run(hashPassword(password));
+
+    console.log('تم إنشاء حساب المدير العام الأول.');
+    console.log('اسم المستخدم: admin');
+    console.log('لم تُنشأ متاجر؛ يستطيع المدير إنشاؤها من لوحة الإدارة.');
+    console.log('لم تتم طباعة كلمة المرور أو حفظها في ملف.');
   }
-  const dir=path.join(DATA,'private');
-  fs.mkdirSync(dir,{recursive:true});
-  const file=path.join(dir,'initial-credentials-'+new Date().toISOString().replace(/[:.]/g,'-')+'.txt');
-  const lines=[
-   'S.N.R-CASH.PRO — بيانات الدخول الأولية',
-   'احتفظ بهذا الملف في مكان آمن، ولا تشاركه علنًا.',
-   'تجربة صاحب المحل تبدأ عند أول تسجيل دخول ناجح لمدة 7 أيام.',
-   'اشتراك الشهر: 1500 دج.',
-   '',
-   ...credentials.map(c=>`الدور: ${c.role}\nالمحل: ${c.store}\nاسم المستخدم: ${c.username}\nكلمة المرور: ${c.password}\n`)
-  ];
-  fs.writeFileSync(file,lines.join('\n'),{mode:0o600,flag:'wx'});
-  console.log('تم إنشاء '+credentials.length+' حسابًا.');
-  console.log('ملف بيانات الدخول محفوظ بصلاحية خاصة هنا: '+file);
-  console.log('\n========== بيانات المدير العام ==========');
-  console.log('الرابط: http://127.0.0.1:3001/admin');
-  console.log('اسم المستخدم: admin');
-  console.log('كلمة المرور: '+adminPassword);
-  console.log('\nبيانات أصحاب المحلات موجودة في ملف النسخة الاحتياطية المذكور أعلاه.');
- }
-} finally { db.close(); }
+} finally {
+  db.close();
+}
