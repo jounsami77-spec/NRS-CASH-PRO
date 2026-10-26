@@ -1,0 +1,14 @@
+{
+  "name": "nrs-cash-pro",
+  "version": "2.0.0",
+  "private": true,
+  "description": "N.R.S. CASH PRO",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check bootstrap.js && node --check public/sw.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

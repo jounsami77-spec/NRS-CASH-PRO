@@ -1,0 +1,37 @@
+# Secrets and environment files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*
+*COMPTES*
+*passwords*
+*secrets*
+
+# Databases and customer data
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Backups, logs, reports, dependencies
+backups/
+logs/
+reports/
+*.log
+node_modules/
+.DS_Store
+
+# Historical backups and temporary repair scripts
+*.backup-*
+*.before-deploy-*
+*-audit.js
+repair-final.js
+apply-sales-upgrade.sh
+reset-dzvora-store.py
+seed-algerian-products.js
+seed-specialty-catalogs.js
+.gitignore.pre-security-*

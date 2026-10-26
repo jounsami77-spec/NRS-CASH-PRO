@@ -1,0 +1,22 @@
+{
+  "id": "/",
+  "name": "N.R.S. CASH PRO",
+  "short_name": "NRS CASH",
+  "description": "نظام الكاشير وإدارة المبيعات",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07130f",
+  "theme_color": "#071b15",
+  "icons": [
+    {
+      "src": "/icons/nrs-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

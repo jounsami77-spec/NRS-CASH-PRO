@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="112" fill="#071b15"/>
+<rect x="34" y="34" width="444" height="444" rx="92" fill="#102b20" stroke="#18a66a" stroke-width="12"/>
+<path d="M120 132h272v54H120z" fill="#18a66a"/>
+<path d="M120 213h54v167h-54zM229 213h54v167h-54zM338 213h54v167h-54z" fill="#f2fbf5"/>
+<path d="M174 213h55v54h-55zM283 326h55v54h-55z" fill="#18a66a"/>
+<text x="256" y="438" font-family="Arial,sans-serif" font-size="43" font-weight="700" text-anchor="middle" fill="#f2fbf5">NRS</text>
+</svg>
