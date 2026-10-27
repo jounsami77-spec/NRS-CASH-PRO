@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:ns0="http://schemas.android.com/apk/res/android" xmlns:ns1="ector" ns0:width="108dp" ns0:height="108dp" ns0:viewportWidth="108" ns0:viewportHeight="108">
+
+    <ns1:path ns0:fillColor="#073D32" ns0:pathData="M0,0h108v108h-108z" /><path ns0:fillColor="#00FFFFFF" ns0:pathData="M0,0h108v108h-108z" />
+
+    <path ns0:fillColor="#FFD783" ns0:pathData="M24,20h8v58h-8z M24,20h9l26,39v19h-8z" />
+
+    <path ns0:fillColor="#FFFFFF" ns0:pathData="M23,25h8v43h-8z M31,25h8l19,27v16h-8z" />
+
+    <path ns0:fillColor="#FFFFFF" ns0:pathData="M45,25h22c9,0 14,6 14,15c0,7 -3,12 -9,14l11,16h-11l-10,-15h-7v15h-10z M55,34v12h11c4,0 6,-2 6,-6c0,-4 -2,-6 -6,-6z" />
+
+    <path ns0:fillColor="#FFD783" ns0:pathData="M85,30l-5,6c-3,-3 -6,-4 -10,-4h-3v-8h4c6,0 10,2 14,6z" />
+
+    <path ns0:fillColor="#FFFFFF" ns0:pathData="M80,52c-3,-4 -7,-6 -14,-6h-5v8h5c4,0 6,1 8,3z" />
+
+    <path ns0:fillColor="#FFD783" ns0:pathData="M25,84h58v4h-58z" />
+</vector>
