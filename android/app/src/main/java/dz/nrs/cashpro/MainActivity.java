@@ -64,48 +64,80 @@ storeHomeButton.setOnClickListener(v ->
     web.loadUrl("http://127.0.0.1:3001/index.html")
 );
 
-        // NRS_NATIVE_PRINT_BRIDGE_V1
+        // NRS_NATIVE_PRINT_BRIDGE_V2
         web.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void printPage() {
                 runOnUiThread(() -> {
-                    Uri current = Uri.parse(web.getUrl() == null ? "" : web.getUrl());
-                    if (!"127.0.0.1".equals(current.getHost()) ||
-                        current.getPort() != 3001) {
-                        Toast.makeText(MainActivity.this,
-                            "تعذر الطباعة: عنوان التطبيق غير صحيح",
-                            Toast.LENGTH_LONG).show();
-                        return;
-                    }
+                    try {
+                        String url = web.getUrl();
+                        Uri current = Uri.parse(url == null ? "" : url);
 
-                    web.postDelayed(() -> {
-                        try {
-                            PrintManager manager =
-                                (PrintManager) getSystemService(Context.PRINT_SERVICE);
-                            if (manager == null) {
-                                Toast.makeText(MainActivity.this,
-                                    "خدمة الطباعة غير متاحة",
-                                    Toast.LENGTH_LONG).show();
-                                return;
-                            }
-
-                            PrintDocumentAdapter adapter =
-                                web.createPrintDocumentAdapter("NRS-CASH-PRO-Receipt");
-                            PrintAttributes attributes = new PrintAttributes.Builder()
-                                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                                .setResolution(new PrintAttributes.Resolution(
-                                    "nrs_receipt", "NRS Receipt", 300, 300))
-                                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                                .build();
-
-                            manager.print("N.R.S. CASH PRO", adapter, attributes);
-                        } catch (Exception e) {
-                            android.util.Log.e("NRS_PRINT", "Print failed", e);
+                        if (!"127.0.0.1".equals(current.getHost()) ||
+                            current.getPort() != 3001) {
                             Toast.makeText(MainActivity.this,
-                                "تعذرت الطباعة: " + e.getMessage(),
+                                "تعذرت الطباعة: عنوان التطبيق المحلي غير صحيح",
                                 Toast.LENGTH_LONG).show();
+                            return;
                         }
-                    }, 500);
+
+                        Toast.makeText(MainActivity.this,
+                            "تم استلام طلب الطباعة، جارٍ تجهيز الفاتورة...",
+                            Toast.LENGTH_SHORT).show();
+
+                        web.postDelayed(() -> {
+                            try {
+                                PrintManager manager = (PrintManager)
+                                    getSystemService(Context.PRINT_SERVICE);
+
+                                if (manager == null) {
+                                    Toast.makeText(MainActivity.this,
+                                        "خدمة الطباعة غير متاحة على الهاتف",
+                                        Toast.LENGTH_LONG).show();
+                                    return;
+                                }
+
+                                PrintDocumentAdapter adapter =
+                                    web.createPrintDocumentAdapter(
+                                        "NRS-CASH-PRO-Receipt"
+                                    );
+
+                                PrintAttributes attributes =
+                                    new PrintAttributes.Builder()
+                                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                                        .setResolution(new PrintAttributes.Resolution(
+                                            "nrs_receipt", "NRS Receipt", 300, 300))
+                                        .setMinMargins(
+                                            PrintAttributes.Margins.NO_MARGINS)
+                                        .build();
+
+                                manager.print(
+                                    "N.R.S. CASH PRO - فاتورة",
+                                    adapter,
+                                    attributes
+                                );
+
+                            } catch (Throwable e) {
+                                android.util.Log.e(
+                                    "NRS_PRINT", "PrintManager failed", e);
+                                String detail = e.getMessage();
+                                if (detail == null || detail.trim().isEmpty()) {
+                                    detail = e.getClass().getSimpleName();
+                                }
+                                Toast.makeText(MainActivity.this,
+                                    "فشل فتح الطباعة: " + detail,
+                                    Toast.LENGTH_LONG).show();
+                            }
+                        }, 700);
+
+                    } catch (Throwable e) {
+                        android.util.Log.e(
+                            "NRS_PRINT", "Print bridge failed", e);
+                        Toast.makeText(MainActivity.this,
+                            "خطأ في طلب الطباعة: " +
+                                e.getClass().getSimpleName(),
+                            Toast.LENGTH_LONG).show();
+                    }
                 });
             }
         }, "AndroidPrinter");

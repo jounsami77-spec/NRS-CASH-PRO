@@ -1078,13 +1078,32 @@ $('checkout').onclick=async()=>{
    lastSale.saleId,lastSale.items,lastSale.total,lastSale.date
   );
 
-  await loadProducts($('search').value);
-  await loadSales();
+  // اطلب الطباعة فور تجهيز الفاتورة، قبل تحديث قوائم الشاشة.
+  // لا نعيد إرسال طلب البيع ولا ننشئ عملية بيع جديدة.
+  if(shouldPrint){
+   try{
+    window.print();
+   }catch(printError){
+    console.error('NRS: تعذر بدء الطباعة:',printError);
+    msg('saleStatus',
+      `✓ تم حفظ البيع رقم ${lastSale.saleId} — ${money(lastSale.total)} دج. تعذرت الطباعة؛ استخدم زر «طباعة آخر فاتورة».`
+    );
+   }
+  }
 
-  if(shouldPrint)window.print();
+  // تحديث القوائم بعد حفظ البيع؛ فشل التحديث لا يعني فشل البيع.
+  try{
+   await loadProducts($('search').value);
+   await loadSales();
+  }catch(refreshError){
+   console.error('NRS: فشل تحديث القوائم بعد حفظ البيع:',refreshError);
+   msg('saleStatus',
+     `✓ تم حفظ البيع رقم ${lastSale.saleId} — ${money(lastSale.total)} دج. تعذر تحديث إحدى القوائم؛ يمكنك طباعة آخر فاتورة.`
+   );
+  }
 
  }catch(e){
-  msg('saleStatus','لم يتم حفظ البيع: '+e.message);
+  msg('saleStatus','تعذر إكمال العملية: '+e.message+' — تحقق من سجل المبيعات قبل إعادة المحاولة.');
  }finally{
   $('checkout').disabled=false;
  }
