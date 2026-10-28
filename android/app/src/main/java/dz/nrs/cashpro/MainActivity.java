@@ -12,6 +12,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Button;
 import android.graphics.Color;
 import android.view.Gravity;
 
@@ -36,7 +37,25 @@ public class MainActivity extends Activity {
         status.setGravity(Gravity.CENTER_VERTICAL);
         layout.addView(status);
 
+// NRS_NATIVE_STORE_RETURN_BUTTON_V1
+Button storeHomeButton = new Button(this);
+storeHomeButton.setText("← العودة إلى واجهة المتاجر");
+storeHomeButton.setAllCaps(false);
+storeHomeButton.setTextSize(15);
+storeHomeButton.setTextColor(Color.WHITE);
+storeHomeButton.setBackgroundTintList(
+    android.content.res.ColorStateList.valueOf(Color.rgb(16, 108, 67))
+);
+layout.addView(storeHomeButton, new LinearLayout.LayoutParams(
+    LinearLayout.LayoutParams.MATCH_PARENT,
+    LinearLayout.LayoutParams.WRAP_CONTENT
+));
+
         WebView web = new WebView(this);
+
+storeHomeButton.setOnClickListener(v ->
+    web.loadUrl("http://127.0.0.1:3001/index.html")
+);
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
