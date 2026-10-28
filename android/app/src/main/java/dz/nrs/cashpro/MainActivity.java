@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
 
 // NRS_NATIVE_STORE_RETURN_BUTTON_V1
 Button storeHomeButton = new Button(this);
+storeHomeButton.setVisibility(android.view.View.GONE);
 storeHomeButton.setText("← العودة إلى واجهة المتاجر");
 storeHomeButton.setAllCaps(false);
 storeHomeButton.setTextSize(15);
@@ -59,7 +60,26 @@ storeHomeButton.setOnClickListener(v ->
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
-        web.setWebViewClient(new WebViewClient());
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                view.evaluateJavascript(
+                    "(function() {" +
+                    "var path = location.pathname;" +
+                    "var adminPage = (path === '/admin' || path === '/admin.html');" +
+                    "var hasPassword = !!document.querySelector('input[type=password]');" +
+                    "return adminPage && hasPassword;" +
+                    "})()",
+                    result -> runOnUiThread(() -> {
+                        boolean show = "true".equals(result);
+                        storeHomeButton.setVisibility(
+                            show ? android.view.View.VISIBLE : android.view.View.GONE
+                        );
+                    })
+                );
+            }
+        });
 
         web.setWebChromeClient(new WebChromeClient() {
             @Override
