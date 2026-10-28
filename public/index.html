@@ -1651,5 +1651,25 @@ $('dzLoginForm').onsubmit=async e=>{
 })();
 </script>
 
+
+<script>
+// NRS_WEB_PRINT_BRIDGE_V1
+(function () {
+  var browserPrint = window.print.bind(window);
+  window.print = function () {
+    try {
+      if (window.AndroidPrinter &&
+          typeof window.AndroidPrinter.printPage === 'function') {
+        window.AndroidPrinter.printPage();
+        return;
+      }
+    } catch (e) {
+      console.error('تعذر فتح طباعة Android:', e);
+    }
+    browserPrint();
+  };
+})();
+</script>
+
 </body>
 </html>

@@ -2,11 +2,16 @@ package dz.nrs.cashpro;
 
 import android.Manifest;
 import android.app.Activity;
+import android.print.PrintDocumentAdapter;
+import android.print.PrintAttributes;
+import android.print.PrintManager;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.PermissionRequest;
 import android.webkit.WebView;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebViewClient;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -57,6 +62,35 @@ layout.addView(storeHomeButton, new LinearLayout.LayoutParams(
 storeHomeButton.setOnClickListener(v ->
     web.loadUrl("http://127.0.0.1:3001/index.html")
 );
+
+        // NRS_NATIVE_PRINT_BRIDGE_V1
+        web.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void printPage() {
+                runOnUiThread(() -> {
+                    Uri current = Uri.parse(web.getUrl() == null ? "" : web.getUrl());
+                    if (!"127.0.0.1".equals(current.getHost()) ||
+                        (current.getPort() != 3001 && current.getPort() != -1)) {
+                        return;
+                    }
+                    PrintManager manager =
+                        (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                    if (manager == null) return;
+
+                    PrintDocumentAdapter adapter =
+                        web.createPrintDocumentAdapter("NRS-CASH-PRO-Receipt");
+                    PrintAttributes attributes = new PrintAttributes.Builder()
+                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                        .setResolution(new PrintAttributes.Resolution(
+                            "nrs_receipt", "NRS Receipt", 300, 300))
+                        .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                        .build();
+
+                    manager.print("N.R.S. CASH PRO", adapter, attributes);
+                });
+            }
+        }, "AndroidPrinter");
+
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
