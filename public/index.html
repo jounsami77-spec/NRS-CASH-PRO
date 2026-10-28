@@ -1571,5 +1571,85 @@ $('dzLoginForm').onsubmit=async e=>{
 })();
 </script>
 
+
+<!-- NRS_ADMIN_RETURN_BUTTON_V1 -->
+<style>
+#nrs-admin-return-v1 {
+  display: none;
+  position: fixed;
+  z-index: 2147483647;
+  top: max(12px, env(safe-area-inset-top));
+  right: 12px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: #146c43;
+  color: white;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 3px 12px #0004;
+  cursor: pointer;
+}
+</style>
+<button id="nrs-admin-return-v1" type="button">
+  ← العودة إلى واجهة المستخدم
+</button>
+<script>
+(function () {
+  function updateAdminReturnButton() {
+    var b = document.getElementById('nrs-admin-return-v1');
+    if (!b) return;
+    var path = location.pathname.replace(/\/+$/, '') || '/';
+    var hash = location.hash || '';
+    var isAdmin =
+      /^\/admin(?:\/|$)/i.test(path) ||
+      /(?:^|[\/#])admin(?:[\/?]|$)/i.test(hash);
+    b.style.display = isAdmin ? 'block' : 'none';
+  }
+
+  function init() {
+    var b = document.getElementById('nrs-admin-return-v1');
+    if (!b) return;
+
+    b.addEventListener('click', function () {
+      var ref = document.referrer;
+      var sameOrigin = false;
+
+      try {
+        sameOrigin = !!ref &&
+          new URL(ref).origin === location.origin &&
+          !/^\/admin(?:\/|$)/i.test(new URL(ref).pathname);
+      } catch (_) {}
+
+      if (sameOrigin && history.length > 1) {
+        history.back();
+      } else {
+        location.assign('/');
+      }
+    });
+
+    updateAdminReturnButton();
+
+    window.addEventListener('popstate', updateAdminReturnButton);
+    window.addEventListener('hashchange', updateAdminReturnButton);
+
+    ['pushState', 'replaceState'].forEach(function (method) {
+      var original = history[method];
+      history[method] = function () {
+        var result = original.apply(this, arguments);
+        updateAdminReturnButton();
+        return result;
+      };
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
 </body>
 </html>
