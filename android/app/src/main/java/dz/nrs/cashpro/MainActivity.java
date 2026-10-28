@@ -64,14 +64,15 @@ storeHomeButton.setOnClickListener(v ->
     web.loadUrl("http://127.0.0.1:3001/index.html")
 );
 
-        // NRS_NATIVE_PRINT_BRIDGE_V2
+        // NRS_NATIVE_PRINT_BRIDGE_V3
         web.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void printPage() {
                 runOnUiThread(() -> {
                     try {
-                        String url = web.getUrl();
-                        Uri current = Uri.parse(url == null ? "" : url);
+                        Uri current = Uri.parse(
+                            web.getUrl() == null ? "" : web.getUrl()
+                        );
 
                         if (!"127.0.0.1".equals(current.getHost()) ||
                             current.getPort() != 3001) {
@@ -82,7 +83,7 @@ storeHomeButton.setOnClickListener(v ->
                         }
 
                         Toast.makeText(MainActivity.this,
-                            "تم استلام طلب الطباعة، جارٍ تجهيز الفاتورة...",
+                            "وصل طلب الطباعة؛ جارٍ الاتصال بخدمة Android...",
                             Toast.LENGTH_SHORT).show();
 
                         web.postDelayed(() -> {
@@ -91,6 +92,8 @@ storeHomeButton.setOnClickListener(v ->
                                     getSystemService(Context.PRINT_SERVICE);
 
                                 if (manager == null) {
+                                    android.util.Log.e("NRS_PRINT",
+                                        "PrintManager service is null");
                                     Toast.makeText(MainActivity.this,
                                         "خدمة الطباعة غير متاحة على الهاتف",
                                         Toast.LENGTH_LONG).show();
@@ -102,39 +105,61 @@ storeHomeButton.setOnClickListener(v ->
                                         "NRS-CASH-PRO-Receipt"
                                     );
 
+                                if (adapter == null) {
+                                    android.util.Log.e("NRS_PRINT",
+                                        "WebView print adapter is null");
+                                    Toast.makeText(MainActivity.this,
+                                        "تعذر إنشاء مستند الفاتورة",
+                                        Toast.LENGTH_LONG).show();
+                                    return;
+                                }
+
                                 PrintAttributes attributes =
                                     new PrintAttributes.Builder()
-                                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                                        .setResolution(new PrintAttributes.Resolution(
-                                            "nrs_receipt", "NRS Receipt", 300, 300))
-                                        .setMinMargins(
-                                            PrintAttributes.Margins.NO_MARGINS)
+                                        .setMediaSize(
+                                            PrintAttributes.MediaSize.ISO_A4)
                                         .build();
 
-                                manager.print(
-                                    "N.R.S. CASH PRO - فاتورة",
+                                android.print.PrintJob job = manager.print(
+                                    "N.R.S. CASH PRO - Invoice",
                                     adapter,
                                     attributes
                                 );
 
+                                if (job == null) {
+                                    android.util.Log.e("NRS_PRINT",
+                                        "PrintManager.print returned null");
+                                    Toast.makeText(MainActivity.this,
+                                        "لم ينشئ Android مهمة الطباعة",
+                                        Toast.LENGTH_LONG).show();
+                                    return;
+                                }
+
+                                android.util.Log.i("NRS_PRINT",
+                                    "Print job created: " + job.getId());
+
+                                Toast.makeText(MainActivity.this,
+                                    "أنشأ Android مهمة الطباعة. إذا لم تظهر المعاينة، افحص خدمة الطباعة بالنظام.",
+                                    Toast.LENGTH_LONG).show();
+
                             } catch (Throwable e) {
-                                android.util.Log.e(
-                                    "NRS_PRINT", "PrintManager failed", e);
+                                android.util.Log.e("NRS_PRINT",
+                                    "PrintManager.print failed", e);
                                 String detail = e.getMessage();
                                 if (detail == null || detail.trim().isEmpty()) {
                                     detail = e.getClass().getSimpleName();
                                 }
                                 Toast.makeText(MainActivity.this,
-                                    "فشل فتح الطباعة: " + detail,
+                                    "فشل PrintManager: " + detail,
                                     Toast.LENGTH_LONG).show();
                             }
-                        }, 700);
+                        }, 1000);
 
                     } catch (Throwable e) {
-                        android.util.Log.e(
-                            "NRS_PRINT", "Print bridge failed", e);
+                        android.util.Log.e("NRS_PRINT",
+                            "Print bridge failed", e);
                         Toast.makeText(MainActivity.this,
-                            "خطأ في طلب الطباعة: " +
+                            "فشل جسر الطباعة: " +
                                 e.getClass().getSimpleName(),
                             Toast.LENGTH_LONG).show();
                     }
