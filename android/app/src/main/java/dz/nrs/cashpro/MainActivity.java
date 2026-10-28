@@ -17,6 +17,7 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 import android.widget.Button;
 import android.graphics.Color;
 import android.view.Gravity;
@@ -70,23 +71,41 @@ storeHomeButton.setOnClickListener(v ->
                 runOnUiThread(() -> {
                     Uri current = Uri.parse(web.getUrl() == null ? "" : web.getUrl());
                     if (!"127.0.0.1".equals(current.getHost()) ||
-                        (current.getPort() != 3001 && current.getPort() != -1)) {
+                        current.getPort() != 3001) {
+                        Toast.makeText(MainActivity.this,
+                            "تعذر الطباعة: عنوان التطبيق غير صحيح",
+                            Toast.LENGTH_LONG).show();
                         return;
                     }
-                    PrintManager manager =
-                        (PrintManager) getSystemService(Context.PRINT_SERVICE);
-                    if (manager == null) return;
 
-                    PrintDocumentAdapter adapter =
-                        web.createPrintDocumentAdapter("NRS-CASH-PRO-Receipt");
-                    PrintAttributes attributes = new PrintAttributes.Builder()
-                        .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
-                        .setResolution(new PrintAttributes.Resolution(
-                            "nrs_receipt", "NRS Receipt", 300, 300))
-                        .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
-                        .build();
+                    web.postDelayed(() -> {
+                        try {
+                            PrintManager manager =
+                                (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                            if (manager == null) {
+                                Toast.makeText(MainActivity.this,
+                                    "خدمة الطباعة غير متاحة",
+                                    Toast.LENGTH_LONG).show();
+                                return;
+                            }
 
-                    manager.print("N.R.S. CASH PRO", adapter, attributes);
+                            PrintDocumentAdapter adapter =
+                                web.createPrintDocumentAdapter("NRS-CASH-PRO-Receipt");
+                            PrintAttributes attributes = new PrintAttributes.Builder()
+                                .setMediaSize(PrintAttributes.MediaSize.ISO_A4)
+                                .setResolution(new PrintAttributes.Resolution(
+                                    "nrs_receipt", "NRS Receipt", 300, 300))
+                                .setMinMargins(PrintAttributes.Margins.NO_MARGINS)
+                                .build();
+
+                            manager.print("N.R.S. CASH PRO", adapter, attributes);
+                        } catch (Exception e) {
+                            android.util.Log.e("NRS_PRINT", "Print failed", e);
+                            Toast.makeText(MainActivity.this,
+                                "تعذرت الطباعة: " + e.getMessage(),
+                                Toast.LENGTH_LONG).show();
+                        }
+                    }, 500);
                 });
             }
         }, "AndroidPrinter");
