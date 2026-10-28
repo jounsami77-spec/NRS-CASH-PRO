@@ -25,6 +25,7 @@ import android.view.Gravity;
 public class MainActivity extends Activity {
     private static final int CAMERA_REQUEST = 501;
     private PermissionRequest pendingCameraRequest;
+    private boolean nrsPrintCacheRefreshDone = false;
 
     @Override
     public void onCreate(Bundle state) {
@@ -167,13 +168,39 @@ storeHomeButton.setOnClickListener(v ->
             }
         }, "AndroidPrinter");
 
+        // NRS_PRINT_NO_CACHE_V1
+        web.clearCache(true);
         WebSettings settings = web.getSettings();
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+
+                // NRS_PRINT_SERVICE_WORKER_REFRESH_V1
+                // إزالة نسخة الواجهة القديمة من Service Worker مرة واحدة.
+                if (!nrsPrintCacheRefreshDone) {
+                    nrsPrintCacheRefreshDone = true;
+                    view.evaluateJavascript(
+                        "(function(){try{" +
+                        "if(!navigator.serviceWorker||!navigator.serviceWorker.getRegistrations)" +
+                        "return Promise.resolve('unsupported');" +
+                        "return navigator.serviceWorker.getRegistrations().then(function(rs){" +
+                        "return Promise.all(rs.map(function(r){return r.unregister();}));" +
+                        "});" +
+                        "}catch(e){return Promise.resolve('error');}})()",
+                        result -> runOnUiThread(() -> {
+                            view.clearCache(true);
+                            view.loadUrl(
+                                "http://127.0.0.1:3001/index.html?nrs_print_refresh=1"
+                            );
+                        })
+                    );
+                    return;
+                }
+
                 view.evaluateJavascript(
                     "(function() {" +
                     "var path = location.pathname;" +
