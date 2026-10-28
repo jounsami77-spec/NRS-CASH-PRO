@@ -256,4 +256,37 @@ $('refresh').onclick=()=>load().catch(e=>$('message').textContent=e.message);
 $('logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
 loginCheck();
 </script>
+
+<!-- NRS_ADMIN_RETURN_BUTTON_V2 -->
+<style>
+#nrs-admin-return-v2 {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: 12px;
+  z-index: 2147483647;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: #146c43;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 3px 12px #0004;
+  cursor: pointer;
+}
+</style>
+<button id="nrs-admin-return-v2" type="button">
+  ← العودة إلى واجهة المستخدم
+</button>
+<script>
+(function () {
+  var b = document.getElementById('nrs-admin-return-v2');
+  if (b) {
+    b.addEventListener('click', function () {
+      window.location.assign('/');
+    });
+  }
+})();
+</script>
+
 </body></html>
