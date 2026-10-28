@@ -745,7 +745,7 @@ function printProductLabels(p){
  document.body.classList.add('printing-labels');
  const cleanup=()=>{document.body.classList.remove('printing-labels');window.removeEventListener('afterprint',cleanup)};
  window.addEventListener('afterprint',cleanup);
- window.print();
+ requestNativePrint();
  setTimeout(()=>document.body.classList.remove('printing-labels'),1500);
 }
 
@@ -1028,7 +1028,7 @@ function receiptHTML(saleId,items,total,date){
 function printLastReceipt(){
  if(!lastSale)return;
  $('receipt').innerHTML=receiptHTML(lastSale.saleId,lastSale.items,lastSale.total,lastSale.date);
- window.print();
+ requestNativePrint();
 }
 $('printLast').onclick=printLastReceipt;
 $('printCart').onclick=()=>{
@@ -1036,7 +1036,7 @@ $('printCart').onclick=()=>{
  const items=cart.map(x=>({name:x.name,quantity:x.quantity,unit:x.saleUnit||x.unit||'piece',price:Number(x.price)||0,subtotal:(Number(x.price)||0)*Number(x.quantity)}));
  const total=items.reduce((sum,x)=>sum+x.subtotal,0);
  $('receipt').innerHTML=receiptHTML('معاينة',items,total,new Date().toLocaleString('ar-DZ'));
- window.print();
+ requestNativePrint();
 };
 $('checkout').onclick=async()=>{
  if(!cart.length)return msg('saleStatus','السلة فارغة');
@@ -1082,7 +1082,7 @@ $('checkout').onclick=async()=>{
   // لا نعيد إرسال طلب البيع ولا ننشئ عملية بيع جديدة.
   if(shouldPrint){
    try{
-    window.print();
+    requestNativePrint();
    }catch(printError){
     console.error('NRS: تعذر بدء الطباعة:',printError);
     msg('saleStatus',
@@ -1228,7 +1228,7 @@ async function loadSales(){
      printBtn.onclick=()=>{
       if(!saleItems.length){alert('لا توجد تفاصيل منتجات محفوظة لهذه الفاتورة.');return;}
       $('receipt').innerHTML=receiptHTML(s.id,saleItems,Number(s.total),s.created_at);
-      window.print();
+      requestNativePrint();
      };
      d.style.flexWrap='wrap';d.append(details,printBtn);body.append(d);
     });
@@ -1531,7 +1531,7 @@ $('dzLoginForm').onsubmit=async e=>{
       // تأخير بسيط للسماح للمتصفح بتجهيز الجدول قبل فتح الطباعة
       setTimeout(function () {
         try {
-          window.print();
+          requestNativePrint();
         } finally {
           // لا نحذف وضع الطباعة هنا؛ المتصفح ينهيه عند afterprint.
         }
@@ -1672,6 +1672,20 @@ $('dzLoginForm').onsubmit=async e=>{
 
 
 <script>
+// NRS_DIRECT_NATIVE_PRINT_V1
+function requestNativePrint() {
+  try {
+    if (window.AndroidPrinter &&
+        typeof window.AndroidPrinter.printPage === 'function') {
+      window.AndroidPrinter.printPage();
+      return;
+    }
+  } catch (e) {
+    console.error('NRS native print bridge error:', e);
+  }
+  alert('جسر طباعة Android غير متاح. أغلق التطبيق وافتح النسخة المحدّثة.');
+}
+
 // NRS_WEB_PRINT_BRIDGE_V1
 (function () {
   var browserPrint = window.print.bind(window);
