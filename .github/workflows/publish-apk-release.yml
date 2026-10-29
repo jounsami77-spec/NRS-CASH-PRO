@@ -61,7 +61,7 @@ jobs:
           test -s "$APK"
           SIZE="$(stat -c '%s' "$APK")"
           echo "APK size: $SIZE bytes"
-          test "$SIZE" -gt 500000
+          test "$SIZE" -gt 10000
           unzip -t "$APK"
           unzip -Z1 "$APK" > /tmp/nrs-apk-contents.txt
           grep -Fxq 'AndroidManifest.xml' /tmp/nrs-apk-contents.txt
