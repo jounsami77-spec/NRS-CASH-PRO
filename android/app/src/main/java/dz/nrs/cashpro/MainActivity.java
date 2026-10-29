@@ -93,6 +93,12 @@ layout.addView(storeHomeButton, new LinearLayout.LayoutParams(
 
         WebView web = new WebView(this);
 
+        // NRS_WEBVIEW_SOFTWARE_RENDERING_TEST_V1
+        // اختبار تشخيصي قابل للتراجع: العرض البرمجي بدل تسريع WebView.
+        web.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null);
+        android.util.Log.i("NRS_STARTUP",
+            "WebView software rendering test enabled");
+
 storeHomeButton.setOnClickListener(v ->
     web.loadUrl("http://127.0.0.1:3001/index.html")
 );
@@ -207,6 +213,25 @@ storeHomeButton.setOnClickListener(v ->
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean onRenderProcessGone(
+                    WebView view,
+                    android.webkit.RenderProcessGoneDetail detail) {
+                android.util.Log.e("NRS_WEBVIEW",
+                    "Renderer process gone; didCrash=" +
+                    detail.didCrash() + ", priority=" +
+                    detail.rendererPriorityAtExit());
+
+                runOnUiThread(() ->
+                    android.widget.Toast.makeText(
+                        MainActivity.this,
+                        "تعطلت واجهة WebView. أغلق التطبيق وأرسل تقرير الأخطاء.",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                );
+                return true;
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
@@ -438,15 +463,24 @@ storeHomeButton.setOnClickListener(v ->
             if (!nrsNodeStarted) {
                 nrsNodeStarted = true;
                 new Thread(() -> {
-                    startNodeWithArguments(new String[] {
-                        "node",
-                        new java.io.File(root, "mobile-entry.js").getAbsolutePath(),
-                        data.getAbsolutePath(),
-                        tmp.getAbsolutePath(),
-                        home.getAbsolutePath(),
-                        root.getAbsolutePath(),
-                        password
-                    });
+                    try {
+                        android.util.Log.i("NRS_STARTUP",
+                            "Starting embedded Node runtime");
+                        int result = startNodeWithArguments(new String[] {
+                            "node",
+                            new java.io.File(root, "mobile-entry.js").getAbsolutePath(),
+                            data.getAbsolutePath(),
+                            tmp.getAbsolutePath(),
+                            home.getAbsolutePath(),
+                            root.getAbsolutePath(),
+                            password
+                        });
+                        android.util.Log.e("NRS_STARTUP",
+                            "Embedded Node returned: " + result);
+                    } catch (Throwable error) {
+                        android.util.Log.e("NRS_STARTUP",
+                            "Embedded Node startup failed", error);
+                    }
                 }, "NRS-Embedded-Node").start();
             }
         }
