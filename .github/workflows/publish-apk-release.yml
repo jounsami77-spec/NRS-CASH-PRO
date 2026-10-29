@@ -24,6 +24,8 @@ jobs:
         with:
           ref: ${{ inputs.release_tag || github.ref }}
 
+      - name: Prepare embedded Node.js runtime
+        run: bash scripts/prepare-node-mobile-runtime.sh
       - name: Set up Java
         uses: actions/setup-java@v4
         with:

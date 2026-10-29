@@ -23,6 +23,16 @@ import android.graphics.Color;
 import android.view.Gravity;
 
 public class MainActivity extends Activity {
+
+    // NRS_EMBEDDED_NODE_V1
+    static {
+        System.loadLibrary("node");
+        System.loadLibrary("nrsnode");
+    }
+
+    private native int startNodeWithArguments(String[] arguments);
+    private static volatile boolean nrsNodeStarted = false;
+
     private static final int CAMERA_REQUEST = 501;
     private PermissionRequest pendingCameraRequest;
     private boolean nrsPrintCacheRefreshDone = false;
@@ -269,7 +279,7 @@ storeHomeButton.setOnClickListener(v ->
         ));
 
         setContentView(layout);
-        web.loadUrl("http://127.0.0.1:3001/");
+        startEmbeddedServerAndLoad(web);
     }
 
     @Override
@@ -305,4 +315,155 @@ storeHomeButton.setOnClickListener(v ->
     public void onBackPressed() {
         super.onBackPressed();
     }
+
+    private String nrsGetOrCreateInitialPassword() throws java.io.IOException {
+        java.io.File f = new java.io.File(
+            getNoBackupFilesDir(), "nrs-first-admin-password");
+        if (f.isFile()) {
+            return new String(java.nio.file.Files.readAllBytes(f.toPath()),
+                              java.nio.charset.StandardCharsets.UTF_8).trim();
+        }
+
+        final String alphabet =
+            "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        java.security.SecureRandom random = new java.security.SecureRandom();
+        StringBuilder b = new StringBuilder();
+        for (int i=0; i<22; i++) b.append(alphabet.charAt(
+            random.nextInt(alphabet.length())));
+        String password = b.toString();
+
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+            out.write(password.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
+        return password;
+    }
+
+    private void nrsCopyAssetTree(String assetPath, java.io.File dest)
+            throws java.io.IOException {
+        String[] children = getAssets().list(assetPath);
+        if (children != null && children.length > 0) {
+            if (!dest.exists() && !dest.mkdirs())
+                throw new java.io.IOException("Cannot create " + dest);
+            for (String child : children)
+                nrsCopyAssetTree(assetPath + "/" + child,
+                    new java.io.File(dest, child));
+            return;
+        }
+
+        java.io.File parent = dest.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs())
+            throw new java.io.IOException("Cannot create " + parent);
+
+        try (java.io.InputStream in = getAssets().open(assetPath);
+             java.io.FileOutputStream out = new java.io.FileOutputStream(dest)) {
+            byte[] buffer = new byte[16384];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+        }
+    }
+
+    private void nrsShowFirstCredentials(String password) {
+        android.content.SharedPreferences prefs =
+            getSharedPreferences("nrs_first_setup", MODE_PRIVATE);
+        if (prefs.getBoolean("credentials_acknowledged", false)) return;
+
+        new android.app.AlertDialog.Builder(this)
+            .setTitle("إعداد حساب الإدارة")
+            .setMessage("اسم المستخدم: admin\n\nكلمة المرور الأولية:\n"
+                + password
+                + "\n\nانسخ كلمة المرور واحفظها في مكان آمن. لن نعرضها مرة أخرى بعد نسخها.")
+            .setCancelable(false)
+            .setPositiveButton("نسخ كلمة المرور", (dialog, which) -> {
+                android.content.ClipboardManager cm =
+                    (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+                if (cm != null) cm.setPrimaryClip(
+                    android.content.ClipData.newPlainText(
+                        "NRS initial admin password", password));
+                prefs.edit().putBoolean("credentials_acknowledged", true).apply();
+                new java.io.File(getNoBackupFilesDir(),
+                    "nrs-first-admin-password").delete();
+                android.widget.Toast.makeText(this,
+                    "تم نسخ كلمة المرور", android.widget.Toast.LENGTH_LONG).show();
+            })
+            .show();
+    }
+
+    private void startEmbeddedServerAndLoad(final android.webkit.WebView target) {
+        final java.io.File root = new java.io.File(getFilesDir(), "nrs-server");
+        final java.io.File data = new java.io.File(getNoBackupFilesDir(), "data");
+        final java.io.File tmp = getCacheDir();
+        final java.io.File home = getFilesDir();
+
+        final String password;
+        try {
+            nrsCopyAssetTree("nrs-server", root);
+            password = nrsGetOrCreateInitialPassword();
+            if (!new java.io.File(root, "server.js").isFile()
+                    || !new java.io.File(root, "mobile-entry.js").isFile()) {
+                throw new java.io.IOException("Server assets are incomplete");
+            }
+            if (!data.exists() && !data.mkdirs())
+                throw new java.io.IOException("Cannot create private database folder");
+        } catch (Exception e) {
+            android.widget.Toast.makeText(this,
+                "تعذر تجهيز الخادم المحلي: " + e.getMessage(),
+                android.widget.Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        synchronized (MainActivity.class) {
+            if (!nrsNodeStarted) {
+                nrsNodeStarted = true;
+                new Thread(() -> {
+                    startNodeWithArguments(new String[] {
+                        "node",
+                        new java.io.File(root, "mobile-entry.js").getAbsolutePath(),
+                        data.getAbsolutePath(),
+                        tmp.getAbsolutePath(),
+                        home.getAbsolutePath(),
+                        root.getAbsolutePath(),
+                        password
+                    });
+                }, "NRS-Embedded-Node").start();
+            }
+        }
+
+        new Thread(() -> {
+            boolean ready = false;
+            for (int i=0; i<60 && !ready; i++) {
+                java.net.HttpURLConnection c = null;
+                try {
+                    c = (java.net.HttpURLConnection)
+                        new java.net.URL("http://127.0.0.1:3001/api/status")
+                            .openConnection();
+                    c.setConnectTimeout(1200);
+                    c.setReadTimeout(1200);
+                    c.setUseCaches(false);
+                    ready = c.getResponseCode() == 200;
+                } catch (Exception ignored) {
+                    try { Thread.sleep(1000); }
+                    catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+            }
+
+            final boolean serverReady = ready;
+            target.post(() -> {
+                if (!serverReady) {
+                    android.widget.Toast.makeText(this,
+                        "الخادم المحلي لم يبدأ. لم يتم اعتبار التطبيق جاهزًا.",
+                        android.widget.Toast.LENGTH_LONG).show();
+                    return;
+                }
+                target.loadUrl("http://127.0.0.1:3001/");
+                nrsShowFirstCredentials(password);
+            });
+        }, "NRS-Server-Readiness").start();
+    }
+
 }

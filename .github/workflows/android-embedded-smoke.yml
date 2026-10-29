@@ -1,0 +1,82 @@
+name: NRS embedded Android build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android/**'
+      - 'server.js'
+      - 'bootstrap.js'
+      - 'package.json'
+      - 'public/**'
+      - 'scripts/prepare-node-mobile-runtime.sh'
+      - '.github/workflows/android-embedded-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-embedded-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and CMake
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" \
+            "ndk;27.2.12479018" "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Prepare and verify Node.js Mobile
+        run: bash scripts/prepare-node-mobile-runtime.sh
+
+      - name: Check JavaScript sources
+        run: |
+          node --check server.js
+          node --check bootstrap.js
+          node --check public/sw.js
+          test -s android/app/src/main/assets/nrs-server/mobile-entry.js
+          test -s android/app/src/main/jniLibs/arm64-v8a/libnode.so
+          test -s android/app/src/main/cpp/include/node/node.h
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        run: gradle --no-daemon :app:assembleDebug
+
+      - name: Validate APK payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -t "$APK"
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libnode.so'
+          unzip -l "$APK" | grep -q 'classes.dex'
+          unzip -l "$APK" | grep -q 'assets/nrs-server/server.js'
+          unzip -l "$APK" | grep -q 'assets/nrs-server/mobile-entry.js'
+          echo "APK contains Node runtime, DEX and server assets."
+          echo "This is a build/package smoke test, not a real-device sales test."
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NRS-CASH-PRO-embedded-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14

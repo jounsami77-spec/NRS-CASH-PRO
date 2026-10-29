@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>S.N.R-CASH.PRO — الإدارة</title>
+<style>
+:root{color-scheme:dark;--bg:#08140f;--panel:#10231a;--line:#244332;--accent:#20c47a;--muted:#a4b9ac}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f4fff7;font-family:system-ui,Arial,sans-serif}
+.wrap{max-width:1100px;margin:auto;padding:18px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:16px;margin:12px 0}
+h1,h2{margin-top:0}input,button{font:inherit;border-radius:10px;padding:11px;border:1px solid var(--line)}
+input{background:#07110c;color:white;width:100%;margin:6px 0 12px}button{cursor:pointer;background:var(--accent);color:#04150c;font-weight:700;border:0}
+button.secondary{background:#263c30;color:white;border:1px solid var(--line)}button.danger{background:#a93242;color:white}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.stat{background:#091a11;padding:14px;border-radius:12px}.stat strong{display:block;font-size:24px;margin-top:6px}
+.muted{color:var(--muted);font-size:13px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.row input{flex:1;min-width:180px}
+.tablewrap{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:780px}th,td{text-align:right;padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+.pill{display:inline-block;border-radius:99px;padding:4px 9px;background:#234333;font-size:12px}.bad{background:#56272b}.good{background:#174a32}
+#login{max-width:440px;margin:10vh auto}.hidden{display:none!important}.actions{display:flex;flex-wrap:wrap;gap:6px}.actions button{font-size:13px;padding:8px}
+@media(max-width:650px){
+.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.wrap{padding:9px}
+.card{padding:12px;margin:10px 0;border-radius:13px}
+.stat{padding:11px 9px;overflow-wrap:anywhere}
+.stat strong{font-size:20px}
+header.row{align-items:stretch;gap:10px}
+header.row>div{width:100%}
+header.row>div:last-child button{flex:1}
+#addForm{display:grid;grid-template-columns:1fr}
+#addForm input,#addForm button{width:100%;min-width:0;margin:0}
+.tablewrap{overflow:visible}
+table,tbody{display:block;width:100%;min-width:0}
+thead{display:none}
+tbody tr{display:block;width:100%;background:#091a11;border:1px solid var(--line);border-radius:13px;padding:9px;margin:12px 0}
+tbody td{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:10px 3px;overflow-wrap:anywhere;min-width:0}
+tbody td::before{font-weight:700;color:var(--muted);flex:0 0 78px}
+tbody td:nth-child(1)::before{content:"المحل"}
+tbody td:nth-child(2)::before{content:"النشاط"}
+tbody td:nth-child(3)::before{content:"الحساب"}
+tbody td:nth-child(4)::before{content:"حالة المحل"}
+tbody td:nth-child(5)::before{content:"الاشتراك"}
+tbody td:nth-child(6)::before{content:"المنتجات"}
+tbody td:nth-child(7)::before{content:"المبيعات"}
+tbody td:nth-child(8){display:block;border-bottom:0;padding-top:12px}
+tbody td:nth-child(8)::before{display:block;content:"الإجراءات";margin-bottom:9px}
+.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.actions button{width:100%;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:12px;padding:10px 6px;min-height:42px}
+input,button{max-width:100%}
+}
+</style>
+</head>
+<body>
+<div id="login" class="card">
+ <h1>🛡️ S.N.R-CASH.PRO</h1><h2>دخول المدير العام</h2>
+ <p class="muted">هذه اللوحة خاصة بحساب المدير العام فقط.</p>
+ <form id="loginForm"><label>اسم المستخدم</label><input id="username" autocomplete="username" required value="admin">
+ <label>كلمة المرور</label><input id="password" type="password" autocomplete="current-password" required>
+ <button style="width:100%">تسجيل الدخول</button></form><p id="loginMsg"></p>
+</div>
+<div id="dashboard" class="hidden">
+ <div class="wrap">
+  <header class="row" style="justify-content:space-between"><div><h1>🛡️ لوحة المدير العام</h1><p class="muted">إدارة المحلات والاشتراكات — S.N.R-CASH.PRO</p></div><div class="row"><button class="secondary" id="refresh">تحديث</button><button class="secondary" id="logout">خروج</button></div></header>
+  <section class="card">
+   <h2>🔐 تغيير كلمة مرور المدير العام</h2>
+   <form id="adminPasswordForm">
+    <label>كلمة المرور الحالية</label>
+    <input id="adminCurrentPassword" type="password"
+      autocomplete="current-password" required>
+    <label>كلمة المرور الجديدة</label>
+    <input id="adminNewPassword" type="password"
+      autocomplete="new-password" minlength="8" required>
+    <label>تأكيد كلمة المرور الجديدة</label>
+    <input id="adminConfirmPassword" type="password"
+      autocomplete="new-password" minlength="8" required>
+    <button type="submit">حفظ كلمة المرور الجديدة</button>
+   </form>
+   <p id="adminPasswordMsg" role="status"></p>
+  </section>
+
+  <div class="grid">
+   <div class="stat">كل المحلات<strong id="count">0</strong></div>
+   <div class="stat">نشطة<strong id="active">0</strong></div>
+   <div class="stat">موقوفة<strong id="suspended">0</strong></div>
+   <div class="stat">إجمالي المبيعات المسجلة<strong id="revenue">0 دج</strong></div>
+  </div>
+  <section class="card"><h2>＋ إضافة محل جديد</h2><form id="addForm" class="row"><input id="storeName" placeholder="اسم المحل الجديد" minlength="2" maxlength="100" required><select id="businessType" required><option value="grocery">بقالة / سوبرات</option><option value="food_wholesale">مواد غذائية بالجملة</option><option value="oils">زيوت ومواد تشحيم</option><option value="metal_work">حدادة ولحام ومعادن</option><option value="clothing">ملابس وأحذية</option><option value="fabrics">أقمشة وخياطة</option><option value="electronics">هواتف وإلكترونيات</option><option value="computers">إعلام آلي وملحقاته</option><option value="auto_parts">قطع غيار السيارات</option><option value="tires">إطارات وبطاريات</option><option value="cosmetics">مواد تجميل وعناية</option><option value="perfumes">عطور</option><option value="restaurant">مطعم ومقهى</option><option value="bakery">مخبزة وحلويات</option><option value="vegetables">خضر وفواكه</option><option value="butcher">لحوم ودواجن</option><option value="fish">أسماك</option><option value="building">مواد البناء</option><option value="hardware">أدوات حديدية وعتاد</option><option value="quincaillerie">خردوات ومواد تثبيت (Quincaillerie)</option><option value="furniture">أثاث</option><option value="home_appliances">أجهزة منزلية وأوانٍ</option><option value="pharmacy">صيدلية</option><option value="medical">مستلزمات طبية</option><option value="books">مكتبة وقرطاسية</option><option value="barber">حلاقة وتجميل</option><option value="laundry">غسيل وتنظيف</option><option value="agriculture">معدات فلاحية وأعلاف</option><option value="repair">صيانة وإصلاح</option><option value="other">نشاط آخر</option></select><button>إنشاء المحل والحساب</button></form><p class="muted">سيظهر اسم المستخدم وكلمة المرور مرة واحدة بعد الإنشاء؛ احفظهما لصاحب المحل.</p><pre id="created" style="white-space:pre-wrap"></pre></section>
+  <section class="card"><h2>🏪 المحلات والاشتراكات</h2><p class="muted">الاشتراك الشهري: 2,000 دج / 30 يومًا — السنوي: 20,000 دج / 365 يومًا (توفير 4,000 دج). التفعيل يدوي؛ لا توجد بوابة دفع إلكتروني مرتبطة بعد.</p><div id="message"></div><div class="actions" id="storeFilters" style="margin:12px 0;flex-wrap:wrap">
+  <button type="button" class="secondary" data-store-view="active">المتاجر النشطة</button>
+  <button type="button" class="secondary" data-store-view="suspended">المتاجر الموقوفة</button>
+  <button type="button" class="secondary" data-store-view="all">كل المتاجر</button>
+</div>
+<div class="tablewrap"><table><thead><tr><th>المحل</th><th>النشاط</th><th>الحساب</th><th>الحالة</th><th>الاشتراك</th><th>المنتجات</th><th>المبيعات</th><th>الإجراءات</th></tr></thead><tbody id="stores"></tbody></table></div></section>
+ </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+async function api(url,opts={}){const r=await fetch(url,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});const d=await r.json();if(!r.ok)throw Error(d.error||'حدث خطأ');return d}
+function fmt(n){return (Number(n)||0).toLocaleString('fr-DZ',{maximumFractionDigits:2})+' دج'}
+async function loginCheck(){
+ try{const d=await api('/api/me');if(d.user?.role!=='super_admin')throw Error('هذا الحساب ليس مديرًا عامًا');$('login').classList.add('hidden');$('dashboard').classList.remove('hidden');await load()}
+ catch(e){$('login').classList.remove('hidden');$('dashboard').classList.add('hidden')}
+}
+$('loginForm').onsubmit=async e=>{e.preventDefault();$('loginMsg').textContent='';try{const d=await api('/api/login',{method:'POST',body:JSON.stringify({username:$('username').value,password:$('password').value})});if(d.user.role!=='super_admin'){await api('/api/logout',{method:'POST'});throw Error('هذا الحساب ليس مديرًا عامًا')}await loginCheck()}catch(e){$('loginMsg').textContent=e.message}};
+let storeView='active';
+async function load(){
+ const d=await api('/api/admin/overview');
+ $('count').textContent=d.stats.stores;$('active').textContent=d.stats.active;$('suspended').textContent=d.stats.suspended;$('revenue').textContent=fmt(d.stats.revenue);
+ const body=$('stores');body.replaceChildren();
+ for(const s of d.stores){
+  const tr=document.createElement('tr');tr.dataset.storeStatus=s.status;
+  const td=(value)=>{const x=document.createElement('td');x.textContent=value??'—';tr.appendChild(x);return x};
+  const name=td(s.name+' (#'+s.id+')');
+  const types={grocery:'بقالة / سوبرات',food_wholesale:'مواد غذائية بالجملة',oils:'زيوت ومواد تشحيم',metal_work:'حدادة ولحام ومعادن',clothing:'ملابس وأحذية',fabrics:'أقمشة وخياطة',electronics:'هواتف وإلكترونيات',computers:'إعلام آلي وملحقاته',auto_parts:'قطع غيار السيارات',tires:'إطارات وبطاريات',cosmetics:'مواد تجميل وعناية',perfumes:'عطور',restaurant:'مطعم ومقهى',bakery:'مخبزة وحلويات',vegetables:'خضر وفواكه',butcher:'لحوم ودواجن',fish:'أسماك',building:'مواد البناء',hardware:'أدوات حديدية وعتاد',quincaillerie:'خردوات ومواد تثبيت',furniture:'أثاث',home_appliances:'أجهزة منزلية وأوانٍ',pharmacy:'صيدلية',medical:'مستلزمات طبية',books:'مكتبة وقرطاسية',barber:'حلاقة وتجميل',laundry:'غسيل وتنظيف',agriculture:'معدات فلاحية وأعلاف',repair:'صيانة وإصلاح',other:'نشاط آخر'};
+  td(types[s.business_type]||'بقالة / سوبرات');
+  const owner=td('اسم المستخدم: '+(s.owner||'لم يُنشأ'));
+  const status=td(s.status==='active'?'نشط':'موقوف');status.innerHTML='';const sb=document.createElement('span');sb.className='pill '+(s.status==='active'?'good':'bad');sb.textContent=s.status==='active'?'نشط':'موقوف';status.append(sb);
+  const subStatus={active:'نشط',pending:'بانتظار التفعيل',trial:'تجريبي',cancelled:'ملغى',expired:'منتهي'}[s.subscription_status]||(s.subscription_status||'غير محدد');
+  const dateFmt=v=>v?new Date(v).toLocaleDateString('ar-DZ'):'—';
+  const sub=td(subStatus+'\nبداية: '+dateFmt(s.starts_at)+'\nانتهاء: '+(s.expires_at?dateFmt(s.expires_at):'لم يبدأ'));
+  const prod=td(s.products_count);const sales=td(String(s.sales_count)+' فاتورة\n'+fmt(s.sales_total));
+  const actions=td('');const box=document.createElement('div');box.className='actions';
+  function btn(label,action,cls='secondary'){
+    const b=document.createElement('button');
+    b.className=cls;
+    b.textContent=label;
+    b.onclick=async()=>{
+      if(!confirm('تأكيد الإجراء على '+s.name+'؟'))return;
+      let payload={};
+      if(action==='status'){
+        payload={status:s.status==='active'?'suspended':'active'};
+      }else if(action==='subscription'){
+        payload={action:label==='تجربة 7 أيام'?'trial':label.startsWith('سنوي')?'activate_yearly':label.startsWith('شهري')?'activate_monthly':'cancel'};
+      }
+      try{
+        await api('/api/admin/stores/'+s.id+'/'+action,{
+          method:'POST',
+          body:JSON.stringify(payload)
+        });
+        await load();
+        $('message').textContent='تم تنفيذ الإجراء.';
+      }catch(e){
+        $('message').textContent=e.message;
+      }
+    };
+    box.append(b);
+  }
+  const rename=document.createElement('button');rename.className='secondary';rename.textContent='تغيير الاسم';rename.onclick=async()=>{const n=prompt('اسم المحل الجديد',s.name);if(!n)return;try{await api('/api/admin/stores/'+s.id+'/rename',{method:'POST',body:JSON.stringify({name:n})});await load()}catch(e){alert(e.message)}};box.append(rename);
+
+
+
+  const deleteStore=document.createElement('button');
+  deleteStore.type='button';
+  deleteStore.className='danger';
+  deleteStore.textContent='حذف نهائي';
+  deleteStore.onclick=async()=>{
+    if(!confirm('تحذير: سيتم حذف المحل '+s.name+' وكل بياناته نهائيًا. هل تريد المتابعة؟'))return;
+    const typed=prompt('للتأكيد النهائي، اكتب اسم المحل كما هو تمامًا: '+s.name);
+    if(typed===null || typed.trim()!==String(s.name).trim()){
+      alert('لم يتطابق الاسم. لم يتم الحذف.');
+      return;
+    }
+    if(!confirm('التأكيد الأخير: حذف '+s.name+' وفواتيره ومنتجاته واشتراكه وحساباته؟ لا يمكن التراجع.'))return;
+    deleteStore.disabled=true;
+    try{
+      const result=await api('/api/admin/stores/'+s.id+'/delete',{
+        method:'POST',
+        body:JSON.stringify({confirmName:typed})
+      });
+      $('message').textContent=result.message||'تم الحذف.';
+      await load();
+    }catch(e){
+      alert('تعذر الحذف: '+e.message);
+      $('message').textContent=e.message;
+    }finally{
+      deleteStore.disabled=false;
+    }
+  };
+  box.append(deleteStore);
+
+  const resetStorePassword=document.createElement('button');
+  resetStorePassword.type='button';
+  resetStorePassword.className='secondary';
+  resetStorePassword.textContent='تعيين كلمة مرور جديدة';
+  resetStorePassword.onclick=async()=>{
+    const password=prompt('اكتب كلمة المرور الجديدة للمحل: '+s.name+'\n(6 أحرف على الأقل)');
+    if(password===null)return;
+    if(password.trim().length<6){
+      alert('كلمة المرور يجب ألا تقل عن 6 أحرف.');
+      return;
+    }
+    if(!confirm('هل تريد حفظ كلمة المرور الجديدة لهذا المحل؟'))return;
+    $('message').textContent='جارٍ حفظ كلمة المرور...';
+    resetStorePassword.disabled=true;
+    try{
+      const d=await api('/api/admin/stores/'+s.id+'/password',{
+        method:'POST',
+        body:JSON.stringify({password:password})
+      });
+      $('message').textContent=d.message||'تم تغيير كلمة المرور بنجاح.';
+      alert('تم تغيير كلمة المرور للمحل: '+(d.storeName||s.name)+
+        '\nاسم المستخدم: '+(d.username||s.owner||'راجع حساب المحل')+
+        '\nاحتفظ بكلمة المرور التي كتبتها في مكان آمن.');
+    }catch(e){
+      $('message').textContent='فشل تغيير كلمة المرور: '+e.message;
+      alert('فشل تغيير كلمة المرور: '+e.message);
+    }finally{
+      resetStorePassword.disabled=false;
+    }
+  };
+  box.append(resetStorePassword);
+
+
+
+  btn(s.status==='active'?'إيقاف المحل':'إعادة التفعيل','status',s.status==='active'?'danger':'secondary');
+  btn('تجربة 7 أيام','subscription');btn('شهري 2,000 دج / 30 يومًا','subscription');btn('سنوي 20,000 دج / 365 يومًا','subscription');btn('إلغاء الاشتراك','subscription','danger');
+  actions.append(box);
+  body.appendChild(tr);
+ }
+  applyStoreFilter();
+}
+function applyStoreFilter(){
+  const rows=[...document.querySelectorAll('#stores tr')];
+  for(const row of rows){
+    row.hidden=storeView!=='all' && row.dataset.storeStatus!==storeView;
+  }
+  document.querySelectorAll('[data-store-view]').forEach(button=>{
+    button.disabled=button.dataset.storeView===storeView;
+  });
+}
+document.querySelectorAll('[data-store-view]').forEach(button=>{
+  button.addEventListener('click',()=>{
+    storeView=button.dataset.storeView;
+    applyStoreFilter();
+  });
+});
+$('addForm').onsubmit=async e=>{e.preventDefault();$('created').textContent='جارٍ الإنشاء...';try{const d=await api('/api/admin/stores',{method:'POST',body:JSON.stringify({name:$('storeName').value,businessType:$('businessType').value})});$('created').textContent='احفظ بيانات الدخول الآن:\nالمحل: '+$('storeName').value+'\nاسم المستخدم: '+d.username+'\nكلمة المرور: '+d.password;$('storeName').value='';await load()}catch(e){$('created').textContent=e.message}};
+$('adminPasswordForm').onsubmit=async e=>{
+ e.preventDefault();
+ const msg=$('adminPasswordMsg');
+ msg.textContent='';
+ try {
+  await api('/api/admin/password',{method:'POST',body:JSON.stringify({
+   currentPassword:$('adminCurrentPassword').value,
+   newPassword:$('adminNewPassword').value,
+   confirmPassword:$('adminConfirmPassword').value
+  })});
+  msg.textContent='تم تغيير كلمة المرور. سجّل الدخول بالكلمة الجديدة.';
+  $('dashboard').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('password').value='';
+  $('adminPasswordForm').reset();
+ } catch(err) {
+  msg.textContent=err.message;
+ }
+};
+
+$('refresh').onclick=()=>load().catch(e=>$('message').textContent=e.message);
+$('logout').onclick=async()=>{await api('/api/logout',{method:'POST'});location.reload()};
+loginCheck();
+</script>
+
+<!-- NRS_ADMIN_RETURN_BUTTON_V2 -->
+<style>
+#nrs-admin-return-v2 {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  right: 12px;
+  z-index: 2147483647;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 12px;
+  background: #146c43;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  box-shadow: 0 3px 12px #0004;
+  cursor: pointer;
+}
+</style>
+<button id="nrs-admin-return-v2" type="button">
+  ← العودة إلى واجهة المستخدم
+</button>
+<script>
+(function () {
+  var b = document.getElementById('nrs-admin-return-v2');
+  if (b) {
+    b.addEventListener('click', function () {
+      window.location.assign('/index.html');
+    });
+  }
+})();
+</script>
+
+</body></html>

@@ -18,6 +18,8 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Prepare embedded Node.js runtime
+        run: bash scripts/prepare-node-mobile-runtime.sh
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
