@@ -1718,33 +1718,52 @@ $('dzLoginForm').onsubmit=async e=>{
 
 <script>
 // NRS_DIRECT_NATIVE_PRINT_V1
-function requestNativePrint() {
+function requestNativePrint(){
+  /* NRS_IN_APP_INVOICE_PREVIEW_V1 */
   const receipt = document.getElementById('receipt');
-
   if (!receipt || !receipt.innerHTML.trim()) {
-    console.error('[NRS_PRINT] لا توجد فاتورة جاهزة للطباعة');
-    alert('لا توجد فاتورة جاهزة للطباعة. أنشئ الفاتورة ثم أعد المحاولة.');
+    alert('لا توجد فاتورة جاهزة للمعاينة. افتح آخر فاتورة محفوظة أولاً.');
     return;
   }
 
-  if (window.AndroidPrinter &&
-      typeof window.AndroidPrinter.printPage === 'function') {
-    console.info('[NRS_PRINT] تم تجهيز الفاتورة؛ إرسال طلب الطباعة إلى Android');
+  let overlay = document.getElementById('nrs-invoice-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'nrs-invoice-preview-overlay';
+    overlay.setAttribute('dir', 'rtl');
+    overlay.style.cssText =
+      'position:fixed;inset:0;z-index:2147483000;background:rgba(0,0,0,.78);' +
+      'display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;';
 
-    // إتاحة وقت قصير لتحديث DOM قبل أن ينشئ Android مستند الطباعة.
-    window.setTimeout(function () {
-      try {
+    overlay.innerHTML =
+      '<section style="background:#fff;color:#111;width:min(100%,760px);max-height:96%;' +
+      'display:flex;flex-direction:column;border-radius:12px;overflow:hidden;box-shadow:0 8px 40px #0008">' +
+      '<div style="display:flex;gap:8px;padding:10px;background:#f1f1f1;flex-wrap:wrap">' +
+      '<button type="button" id="nrs-preview-print" style="padding:10px 16px;border:0;border-radius:8px;background:#146c43;color:#fff;font-weight:bold">طباعة الفاتورة</button>' +
+      '<button type="button" id="nrs-preview-close" style="padding:10px 16px;border:0;border-radius:8px;background:#444;color:#fff">إغلاق المعاينة</button>' +
+      '</div><div id="nrs-invoice-preview-content" style="background:#fff;color:#111;overflow:auto;padding:16px"></div></section>';
+
+    document.body.appendChild(overlay);
+
+    overlay.querySelector('#nrs-preview-close').addEventListener('click', function(){
+      overlay.style.display = 'none';
+    });
+
+    overlay.querySelector('#nrs-preview-print').addEventListener('click', function(){
+      if (window.AndroidPrinter && typeof window.AndroidPrinter.printPage === 'function') {
         window.AndroidPrinter.printPage();
-      } catch (error) {
-        console.error('[NRS_PRINT] فشل استدعاء جسر Android:', error);
-        alert('تعذّر بدء الطباعة. تحقق من خدمة الطباعة في الهاتف ثم أعد المحاولة.');
+      } else {
+        alert('جسر الطباعة في Android غير متاح في هذه النسخة.');
       }
-    }, 350);
-    return;
+    });
+
+    overlay.addEventListener('click', function(event){
+      if (event.target === overlay) overlay.style.display = 'none';
+    });
   }
 
-  console.error('[NRS_PRINT] جسر Android غير متاح');
-  alert('جسر طباعة Android غير متاح. أغلق التطبيق وافتح النسخة المحدّثة.');
+  overlay.querySelector('#nrs-invoice-preview-content').innerHTML = receipt.innerHTML;
+  overlay.style.display = 'flex';
 }
 
 // NRS_WEB_PRINT_BRIDGE_V1
