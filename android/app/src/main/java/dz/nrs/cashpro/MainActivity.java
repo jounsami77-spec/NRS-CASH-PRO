@@ -25,13 +25,9 @@ import android.view.Gravity;
 public class MainActivity extends Activity {
 
     // NRS_EMBEDDED_NODE_V1
-    static {
-        System.loadLibrary("node");
-        System.loadLibrary("nrsnode");
-    }
-
     private native int startNodeWithArguments(String[] arguments);
     private static volatile boolean nrsNodeStarted = false;
+    private static volatile boolean nrsNativeLoaded = false;
 
     private static final int CAMERA_REQUEST = 501;
     private PermissionRequest pendingCameraRequest;
@@ -40,6 +36,32 @@ public class MainActivity extends Activity {
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
+
+        try {
+            if (!nrsNativeLoaded) {
+                System.loadLibrary("c++_shared");
+                System.loadLibrary("node");
+                System.loadLibrary("nrsnode");
+                nrsNativeLoaded = true;
+            }
+        } catch (Throwable error) {
+            android.util.Log.e("NRS_STARTUP",
+                "Native library loading failed", error);
+
+            TextView failure = new TextView(this);
+            failure.setText(
+                "تعذر تشغيل محرك التطبيق.\\n\\n" +
+                "نوع الخطأ: " + error.getClass().getSimpleName() +
+                "\\nالتفاصيل: " + String.valueOf(error.getMessage()) +
+                "\\n\\nأرسل هذه الرسالة للدعم الفني."
+            );
+            failure.setTextSize(16);
+            failure.setTextColor(Color.RED);
+            failure.setPadding(24, 32, 24, 32);
+            failure.setTextIsSelectable(true);
+            setContentView(failure);
+            return;
+        }
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
