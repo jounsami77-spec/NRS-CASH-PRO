@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(nrsnode LANGUAGES CXX)
 
+# Node.js 24 headers require C++20 concepts.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+
 add_library(node SHARED IMPORTED)
 set_target_properties(node PROPERTIES
     IMPORTED_LOCATION
