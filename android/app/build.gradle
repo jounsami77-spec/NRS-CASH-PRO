@@ -9,6 +9,12 @@ android {
     compileSdk 35
 
     defaultConfig {
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+
         applicationId 'dz.nrs.cashpro'
         minSdk 23
         targetSdk 28
@@ -21,7 +27,6 @@ android {
     }
     externalNativeBuild {
         cmake {
-                arguments "-DANDROID_STL=c++_shared"
             path file("src/main/cpp/CMakeLists.txt")
             version "3.22.1"
         }
