@@ -60,7 +60,7 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build debug APK
-        run: gradle --no-daemon :app:assembleDebug
+        run: gradle --no-daemon -p android :app:assembleDebug
 
       - name: Validate APK payload
         shell: bash
