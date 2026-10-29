@@ -13,6 +13,8 @@ set_target_properties(node PROPERTIES
     "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}/libnode.so")
 
 add_library(nrsnode SHARED native-lib.cpp)
+target_compile_features(nrsnode PRIVATE cxx_std_20)
+target_compile_options(nrsnode PRIVATE -std=c++20)
 
 target_include_directories(nrsnode PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include/node")
