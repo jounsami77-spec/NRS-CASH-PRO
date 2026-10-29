@@ -1,0 +1,62 @@
+name: Publish NRS Cash Pro APK
+
+on:
+  push:
+    tags:
+      - 'v1.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Validate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          SIZE="$(stat -c '%s' "$APK")"
+          echo "APK size: $SIZE bytes"
+          test "$SIZE" -gt 500000 || {
+            echo "APK is unexpectedly small; refusing publication."
+            exit 1
+          }
+          unzip -t "$APK"
+          unzip -l "$APK" | grep -q 'AndroidManifest.xml'
+          unzip -l "$APK" | grep -q 'classes.dex'
+          cp "$APK" NRS-CASH-PRO-1.1.3.apk
+
+      - name: Publish release with APK
+        uses: softprops/action-gh-release@v2
+        with:
+          name: N.R.S. CASH PRO 1.1.3
+          body: |
+            N.R.S. CASH PRO Android release 1.1.3 (versionCode 5).
+
+            Download NRS-CASH-PRO-1.1.3.apk below.
+            Invoice printing is still pending further testing.
+          files: NRS-CASH-PRO-1.1.3.apk
+          fail_on_unmatched_files: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
