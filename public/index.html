@@ -455,6 +455,47 @@ html, body {
 }
 /* END NRS_CASHIER_PRODUCTS_MOBILE_V1 */
 
+
+/* NRS_PRO_REFRESH_AND_DAILY_CLOSE_V1 */
+#closeDailySales {
+  min-height: 54px;
+  border: 1px solid rgba(255,255,255,.22);
+  border-radius: 14px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: .1px;
+  box-shadow: 0 5px 16px rgba(0,0,0,.12);
+  touch-action: manipulation;
+}
+#closeDailySales:disabled {
+  opacity: .65;
+  cursor: wait;
+}
+#dailyCloseStatus {
+  margin-top: 10px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+#nrsPullRefreshIndicator {
+  position: fixed;
+  z-index: 99999;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  padding: 10px 16px;
+  border-radius: 999px;
+  color: #fff;
+  background: #087b4b;
+  box-shadow: 0 5px 22px rgba(0,0,0,.24);
+  font: 700 14px/1.4 system-ui,sans-serif;
+  direction: rtl;
+  pointer-events: none;
+}
+#nrsPullRefreshIndicator.show { display: block; }
+#nrsPullRefreshIndicator.busy { opacity: .9; }
+/* END NRS_PRO_REFRESH_AND_DAILY_CLOSE_V1 */
+
 </style>
 <script src="https://unpkg.com/@zxing/browser@0.1.5/umd/index.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
@@ -670,6 +711,10 @@ document.querySelectorAll('.navbtn').forEach(b=>b.addEventListener('click',()=>{
  const page=b.dataset.page;
  document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));
  document.querySelectorAll('.navbtn').forEach(x=>x.classList.toggle('active',x===b));
+ if(page==='cashier'){
+  const searchBox=$('search');
+  loadProducts(searchBox ? searchBox.value : '');
+ }
  if(page==='products')loadCatalog();
  if(page==='sales')loadSales();
  window.scrollTo({top:0,behavior:'smooth'});
@@ -1674,15 +1719,31 @@ $('dzLoginForm').onsubmit=async e=>{
 <script>
 // NRS_DIRECT_NATIVE_PRINT_V1
 function requestNativePrint() {
-  try {
-    if (window.AndroidPrinter &&
-        typeof window.AndroidPrinter.printPage === 'function') {
-      window.AndroidPrinter.printPage();
-      return;
-    }
-  } catch (e) {
-    console.error('NRS native print bridge error:', e);
+  const receipt = document.getElementById('receipt');
+
+  if (!receipt || !receipt.innerHTML.trim()) {
+    console.error('[NRS_PRINT] لا توجد فاتورة جاهزة للطباعة');
+    alert('لا توجد فاتورة جاهزة للطباعة. أنشئ الفاتورة ثم أعد المحاولة.');
+    return;
   }
+
+  if (window.AndroidPrinter &&
+      typeof window.AndroidPrinter.printPage === 'function') {
+    console.info('[NRS_PRINT] تم تجهيز الفاتورة؛ إرسال طلب الطباعة إلى Android');
+
+    // إتاحة وقت قصير لتحديث DOM قبل أن ينشئ Android مستند الطباعة.
+    window.setTimeout(function () {
+      try {
+        window.AndroidPrinter.printPage();
+      } catch (error) {
+        console.error('[NRS_PRINT] فشل استدعاء جسر Android:', error);
+        alert('تعذّر بدء الطباعة. تحقق من خدمة الطباعة في الهاتف ثم أعد المحاولة.');
+      }
+    }, 350);
+    return;
+  }
+
+  console.error('[NRS_PRINT] جسر Android غير متاح');
   alert('جسر طباعة Android غير متاح. أغلق التطبيق وافتح النسخة المحدّثة.');
 }
 
@@ -1701,6 +1762,143 @@ function requestNativePrint() {
     }
     browserPrint();
   };
+})();
+</script>
+
+
+
+<script>
+/* NRS_PRO_PULL_REFRESH_V1 */
+(function () {
+  'use strict';
+  if (window.__nrsProPullRefreshInstalled) return;
+  window.__nrsProPullRefreshInstalled = true;
+
+  var startY = 0;
+  var startX = 0;
+  var tracking = false;
+  var refreshing = false;
+  var lastRefresh = 0;
+  var threshold = 95;
+  var minGapMs = 1200;
+
+  var indicator = document.createElement('div');
+  indicator.id = 'nrsPullRefreshIndicator';
+  indicator.setAttribute('role', 'status');
+  indicator.setAttribute('aria-live', 'polite');
+  indicator.textContent = 'اسحب للتحديث';
+  document.addEventListener('DOMContentLoaded', function () {
+    if (!document.getElementById(indicator.id)) {
+      document.body.appendChild(indicator);
+    }
+  });
+  if (document.body && !document.getElementById(indicator.id)) {
+    document.body.appendChild(indicator);
+  }
+
+  function activePage() {
+    var page = document.querySelector('.page.active');
+    if (!page) return 'cashier';
+    return page.id.replace(/^page-/, '') || 'cashier';
+  }
+
+  function show(text, busy) {
+    indicator.textContent = text;
+    indicator.classList.add('show');
+    indicator.classList.toggle('busy', !!busy);
+  }
+
+  function hide() {
+    indicator.classList.remove('show', 'busy');
+  }
+
+  async function refreshCurrentPage(reason) {
+    var now = Date.now();
+    if (refreshing || now - lastRefresh < minGapMs) return;
+    refreshing = true;
+    lastRefresh = now;
+    show('جارٍ تحديث البيانات…', true);
+
+    try {
+      var page = activePage();
+
+      if (page === 'cashier') {
+        if (typeof loadProducts === 'function') {
+          var search = document.getElementById('search');
+          await loadProducts(search ? search.value : '');
+        }
+        if (typeof loadSettings === 'function') await loadSettings();
+      } else if (page === 'products') {
+        if (typeof loadCatalog === 'function') await loadCatalog();
+        if (typeof loadProducts === 'function') {
+          var q = document.getElementById('search');
+          await loadProducts(q ? q.value : '');
+        }
+      } else if (page === 'sales') {
+        // loadSales تستدعي loadDailySummary بنفسها.
+        if (typeof loadSales === 'function') await loadSales();
+        else if (typeof loadDailySummary === 'function') await loadDailySummary();
+      } else if (page === 'settings') {
+        if (typeof loadSettings === 'function') await loadSettings();
+      }
+
+      show('✓ تم تحديث الصفحة', false);
+      window.setTimeout(hide, 1100);
+    } catch (e) {
+      console.error('NRS refresh failed:', e);
+      show('تعذر التحديث — تحقق من الاتصال ثم أعد المحاولة', false);
+      window.setTimeout(hide, 2200);
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  function isInteractive(target) {
+    return !!(target && target.closest &&
+      target.closest('input,textarea,select,button,a,[contenteditable="true"]'));
+  }
+
+  document.addEventListener('touchstart', function (e) {
+    if (!e.touches || e.touches.length !== 1) {
+      tracking = false;
+      return;
+    }
+    var t = e.touches[0];
+    startY = t.clientY;
+    startX = t.clientX;
+    tracking = window.scrollY <= 3 && !isInteractive(e.target);
+  }, { passive: true });
+
+  document.addEventListener('touchend', function (e) {
+    if (!tracking || !e.changedTouches || !e.changedTouches.length) return;
+    tracking = false;
+    var t = e.changedTouches[0];
+    var dy = t.clientY - startY;
+    var dx = Math.abs(t.clientX - startX);
+    if (dy >= threshold && dy > dx * 1.25 && window.scrollY <= 3) {
+      refreshCurrentPage('pull');
+    }
+  }, { passive: true });
+
+  // تحديث آمن عند العودة للتطبيق دون إعادة تحميل المستند أو الخروج من الصفحة.
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') {
+      refreshCurrentPage('visible');
+    }
+  });
+  window.addEventListener('pageshow', function () {
+    refreshCurrentPage('pageshow');
+  });
+
+  // تحديث قائمة الكاشير بعد حفظ منتج جديد أو تعديل منتج عند العودة للتطبيق.
+  window.addEventListener('focus', function () {
+    if (document.visibilityState === 'visible') {
+      refreshCurrentPage('focus');
+    }
+  });
+
+  // توفير دالة يدوية يمكن استدعاؤها من زر تحديث مستقبلي.
+  window.nrsRefreshCurrentPage = refreshCurrentPage;
 })();
 </script>
 
