@@ -516,8 +516,17 @@ storeHomeButton.setOnClickListener(v ->
                         android.widget.Toast.LENGTH_LONG).show();
                     return;
                 }
+                android.util.Log.i("NRS_STARTUP",
+                    "Server ready; loading WebView before first-credentials dialog");
                 target.loadUrl("http://127.0.0.1:3001/");
-                nrsShowFirstCredentials(password);
+
+                // NRS_DELAY_FIRST_CREDENTIALS_DIAGNOSTIC_V1
+                // اختبار: فصل نافذة الإعداد عن لحظة بدء تحميل WebView.
+                target.postDelayed(() -> {
+                    if (!isFinishing() && !isDestroyed()) {
+                        nrsShowFirstCredentials(password);
+                    }
+                }, 3000);
             });
         }, "NRS-Server-Readiness").start();
     }
