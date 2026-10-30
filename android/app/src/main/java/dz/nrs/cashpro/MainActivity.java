@@ -462,10 +462,12 @@ storeHomeButton.setOnClickListener(v ->
         synchronized (MainActivity.class) {
             if (!nrsNodeStarted) {
                 nrsNodeStarted = true;
+
                 new Thread(() -> {
                     try {
                         android.util.Log.i("NRS_STARTUP",
                             "Starting embedded Node runtime");
+
                         int result = startNodeWithArguments(new String[] {
                             "node",
                             new java.io.File(root, "mobile-entry.js").getAbsolutePath(),
@@ -475,11 +477,20 @@ storeHomeButton.setOnClickListener(v ->
                             root.getAbsolutePath(),
                             password
                         });
+
                         android.util.Log.e("NRS_STARTUP",
                             "Embedded Node returned: " + result);
+
                     } catch (Throwable error) {
                         android.util.Log.e("NRS_STARTUP",
                             "Embedded Node startup failed", error);
+
+                    } finally {
+                        synchronized (MainActivity.class) {
+                            nrsNodeStarted = false;
+                        }
+                        android.util.Log.w("NRS_STARTUP",
+                            "Embedded Node execution ended; restart is permitted");
                     }
                 }, "NRS-Embedded-Node").start();
             }
@@ -489,22 +500,41 @@ storeHomeButton.setOnClickListener(v ->
             boolean ready = false;
             for (int i=0; i<60 && !ready; i++) {
                 java.net.HttpURLConnection c = null;
+
                 try {
                     c = (java.net.HttpURLConnection)
                         new java.net.URL("http://127.0.0.1:3001/api/status")
                             .openConnection();
+
                     c.setConnectTimeout(1200);
                     c.setReadTimeout(1200);
                     c.setUseCaches(false);
-                    ready = c.getResponseCode() == 200;
-                } catch (Exception ignored) {
-                    try { Thread.sleep(1000); }
-                    catch (InterruptedException e) {
+
+                    int responseCode = c.getResponseCode();
+                    ready = responseCode == 200;
+
+                    if (!ready) {
+                        android.util.Log.w("NRS_STARTUP",
+                            "Readiness attempt " + (i + 1) +
+                            " returned HTTP " + responseCode);
+                    }
+
+                } catch (Exception error) {
+                    android.util.Log.w("NRS_STARTUP",
+                        "Readiness attempt " + (i + 1) +
+                        " failed: " + error.getClass().getSimpleName());
+
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+
+                if (!ready && i < 59) {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException error) {
                         Thread.currentThread().interrupt();
                         break;
                     }
-                } finally {
-                    if (c != null) c.disconnect();
                 }
             }
 
