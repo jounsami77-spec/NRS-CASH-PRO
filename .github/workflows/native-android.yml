@@ -3,6 +3,8 @@ name: NRS Cash Pro Native Android
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - 'native-android/**'
       - '.github/workflows/native-android.yml'
@@ -13,6 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -29,30 +32,47 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK and accept licenses
+        uses: android-actions/setup-android@v4
+        with:
+          accept-android-sdk-licenses: 'true'
+          log-accepted-android-sdk-licenses: 'false'
+          packages: 'platform-tools'
 
-      - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Install required Android SDK packages
+        run: |
+          set -e
+          sdkmanager --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Verify Android SDK
+        run: |
+          set -e
+          sdkmanager --list_installed
+          test -d "$ANDROID_HOME/platforms/android-35"
+          test -d "$ANDROID_HOME/build-tools/35.0.0"
+          echo "Android SDK verification passed"
 
       - name: Build Native Debug APK
         working-directory: native-android
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon --stacktrace assembleDebug
 
       - name: Verify APK
         run: |
+          set -e
           APK="native-android/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
 
+          test -s "$APK"
           echo "APK_SIZE=$(stat -c%s "$APK")"
 
           if unzip -l "$APK" | grep -E 'lib/.*/(libnode|libnrsnode)\.so'; then
-            echo "ERROR: Node library found"
+            echo "ERROR: Node library found in APK"
             exit 1
           fi
 
           if unzip -l "$APK" | grep -E 'assets/.*/server\.js'; then
-            echo "ERROR: Embedded Node server found"
+            echo "ERROR: Embedded Node server found in APK"
             exit 1
           fi
 
