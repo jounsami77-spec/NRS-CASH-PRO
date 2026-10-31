@@ -1,9 +1,11 @@
-const CACHE_NAME = 'nrs-cash-pro-shell-v1';
+const CACHE_NAME = 'nrs-cash-pro-shell-v2';
 const SHELL = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
-  '/icons/nrs-icon.svg'
+  '/icons/nrs-icon.svg',
+  '/vendor/zxing-browser-0.1.5.min.js',
+  '/vendor/jsbarcode-3.11.6.all.min.js'
 ];
 
 self.addEventListener('install', event => {
