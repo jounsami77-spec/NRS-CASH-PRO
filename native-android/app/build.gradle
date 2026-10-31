@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'dz.nrs.cashpro.nativeapp'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'dz.nrs.cashpro.nativeapp'
+        minSdk 23
+        targetSdk 35
+        versionCode 2
+        versionName '1.1.0-native'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.test'
+            versionNameSuffix '-test'
+        }
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.80'
+}

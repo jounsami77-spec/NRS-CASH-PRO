@@ -1,0 +1,13 @@
+<resources>
+    <style name="NRSTheme"
+        parent="@android:style/Theme.Material.Light.NoActionBar">
+
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#16794A</item>
+        <item name="android:statusBarColor">#105B38</item>
+        <item name="android:navigationBarColor">#105B38</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>
