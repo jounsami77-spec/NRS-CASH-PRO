@@ -93,11 +93,11 @@ layout.addView(storeHomeButton, new LinearLayout.LayoutParams(
 
         WebView web = new WebView(this);
 
-        // NRS_WEBVIEW_SOFTWARE_RENDERING_TEST_V1
-        // اختبار تشخيصي قابل للتراجع: العرض البرمجي بدل تسريع WebView.
-        web.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null);
+        // NRS_WEBVIEW_HARDWARE_RENDERING_V1
+        // استخدام تسريع Android العتادي لتحسين WebView والكاميرا.
+        web.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null);
         android.util.Log.i("NRS_STARTUP",
-            "WebView software rendering test enabled");
+            "WebView hardware rendering enabled");
 
 storeHomeButton.setOnClickListener(v ->
     web.loadUrl("http://127.0.0.1:3001/index.html")

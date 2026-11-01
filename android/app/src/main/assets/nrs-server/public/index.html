@@ -580,7 +580,8 @@ html, body {
     <div class="section-head"><h2>📦 زيد منتوج للمخزن</h2><span class="muted">الأسعار بالدينار</span></div>
     <label>اسم المنتوج</label><input id="pname" placeholder="مثال: حليب">
     <label>الباركود (اختياري)</label><input id="pbarcode" placeholder="اكتب الرقم أو امسحه">
-    <label>سعر الوحدة (دج)</label><input id="pprice" type="number" min="0" step="0.01" inputmode="decimal">
+    <label>سعر البيع للوحدة (دج)</label><input id="pprice" type="number" min="0" step="0.01" inputmode="decimal">
+<label>سعر الشراء للوحدة (دج)</label><input id="ppurchase" type="number" min="0" step="0.01" inputmode="decimal" value="0">
     <div class="row"><div><label>وحدة القياس</label><select id="punit"><option value="piece">قطعة</option><option value="kg">كيلوغرام</option><option value="g">غرام</option><option value="liter">لتر</option><option value="meter">متر</option><option value="carton">كرتون</option><option value="box">علبة</option><option value="pair">زوج</option><option value="bag">كيس</option><option value="ton">طن</option></select></div><div><label>عدد الوحدات داخل العبوة (مثلاً 12 حبة)</label><input id="ppacksize" type="number" min="0.001" step="any" value="1">
 <small class="field-help">مثال: 12 حبة في الكرتونة. التحويل التلقائي بين الكرتونة والحبة لم يُفعّل بعد.</small></div></div>
     <div class="row"><div><label>الكمية في المخزن</label><input id="pstock" type="number" min="0" step="any" value="0" inputmode="decimal"></div><div><label>التصنيف</label><input id="pcategory" value="عام"></div></div>
@@ -928,6 +929,7 @@ async function loadCatalog(){
     $('pname').value=p.name||'';
     $('pbarcode').value=p.barcode||'';
     $('pprice').value=p.price??0;
+    $('ppurchase').value=p.purchase_price??0;
     $('punit').value=p.unit||'piece';
     $('ppacksize').value=p.pack_size??1;
     $('pstock').value=p.stock??0;
@@ -939,6 +941,33 @@ async function loadCatalog(){
     $('pname').focus();
    };
    row.append(edit);
+
+   const profit=document.createElement('div');
+   profit.className='item-meta';
+   const buy=Number(p.purchase_price||0);
+   const sell=Number(p.price||0);
+   profit.textContent='شراء: '+money(buy)+' دج · ربح الوحدة: '+money(sell-buy)+' دج';
+   row.querySelector('.item-main').append(profit);
+
+   const del=document.createElement('button');
+   del.className='secondary';
+   del.textContent='🗑️ حذف';
+   del.style.cssText='width:auto;white-space:nowrap;padding:8px';
+   del.onclick=async()=>{
+    if(!confirm('هل تريد حذف المنتج «'+p.name+'»؟\nستبقى تفاصيله محفوظة في الفواتير القديمة.'))return;
+    del.disabled=true;
+    try{
+     await request('/api/products/'+encodeURIComponent(p.id),{method:'DELETE'});
+     if(editingProductId===p.id)$('cancelEditProduct').click();
+     msg('productStatus','تم حذف المنتج مع الاحتفاظ بالفواتير القديمة');
+     await loadCatalog();
+     await loadProducts($('search').value);
+    }catch(e){
+     msg('productStatus','تعذر حذف المنتج: '+e.message);
+     del.disabled=false;
+    }
+   };
+   row.append(del);
   });
   if(!rows.length)list.innerHTML='<div class="empty">لا توجد منتجات</div>';
  }catch(e){$('catalog').textContent=e.message}
@@ -1040,7 +1069,7 @@ $('clear').onclick=()=>{cart=[];renderCart();msg('saleStatus','')};
 
 $('cancelEditProduct').onclick=()=>{
  editingProductId=null;
- $('pname').value='';$('pbarcode').value='';$('pprice').value='';
+ $('pname').value='';$('pbarcode').value='';$('pprice').value='';$('ppurchase').value='0';
  $('pstock').value='0';$('punit').value='piece';
  $('ppacksize').value='1';$('pcategory').value='عام';
  $('addProduct').textContent='＋ احفظ المنتوج';
@@ -1054,6 +1083,7 @@ $('addProduct').onclick=async()=>{
   const target=wasEditing?('/api/products/'+encodeURIComponent(editingProductId)):'/api/products';
   const p=await request(target,{method:wasEditing?'PUT':'POST',body:JSON.stringify({
    name:$('pname').value,barcode:$('pbarcode').value,price:$('pprice').value,
+   purchase_price:$('ppurchase').value,
    unit:$('punit').value,pack_size:$('ppacksize').value,
    stock:$('pstock').value,category:$('pcategory').value
   })});
@@ -1061,7 +1091,7 @@ $('addProduct').onclick=async()=>{
   editingProductId=null;
   $('addProduct').textContent='＋ احفظ المنتوج';
   $('cancelEditProduct').classList.add('hidden');
-  $('pname').value='';$('pbarcode').value='';$('pprice').value='';$('pstock').value='0';$('punit').value='piece';$('ppacksize').value='1';
+  $('pname').value='';$('pbarcode').value='';$('pprice').value='';$('ppurchase').value='0';$('pstock').value='0';$('punit').value='piece';$('ppacksize').value='1';
   await loadCatalog();await loadProducts($('search').value);
  }catch(e){msg('productStatus',e.message)}
 };
@@ -1281,7 +1311,41 @@ async function loadSales(){
       $('receipt').innerHTML=receiptHTML(s.id,saleItems,Number(s.total),s.created_at);
       requestNativePrint();
      };
-     d.style.flexWrap='wrap';d.append(details,printBtn);body.append(d);
+
+     // NRS_INVOICE_DELETE_BUTTON_V1
+     const deleteBtn=document.createElement('button');
+     deleteBtn.type='button';
+     deleteBtn.textContent='🗑️ حذف الفاتورة';
+     deleteBtn.style.cssText=
+      'width:100%;margin-top:6px;background:#b42318;color:#fff;border:0;padding:10px;border-radius:8px';
+     deleteBtn.onclick=async()=>{
+      const amount=money(s.total)+' دج';
+      if(!confirm(
+       'تأكيد حذف الفاتورة رقم #'+s.id+'؟\n'+
+       'القيمة: '+amount+'\n\n'+
+       'سيتم إرجاع كميات المنتجات إلى المخزون.\n'+
+       'لا يمكن حذف فاتورة مشمولة في تقرير إغلاق.'
+      )) return;
+
+      deleteBtn.disabled=true;
+      deleteBtn.textContent='جارٍ حذف الفاتورة...';
+      try{
+       const result=await request(
+        '/api/sales/'+encodeURIComponent(s.id),
+        {method:'DELETE'}
+       );
+       alert(result.message||'تم حذف الفاتورة');
+       await loadSales();
+      }catch(e){
+       alert('تعذر حذف الفاتورة: '+e.message);
+       deleteBtn.disabled=false;
+       deleteBtn.textContent='🗑️ حذف الفاتورة';
+      }
+     };
+     d.style.flexWrap='wrap';
+     d.append(details,printBtn,deleteBtn);
+     body.append(d);
+
     });
     toggle.addEventListener('click',()=>{
      const hidden=body.style.display==='none';

@@ -145,10 +145,19 @@ if (/barcode\s+TEXT\s+UNIQUE/i.test(productSQL)) {
     stock INTEGER NOT NULL DEFAULT 0,
     category TEXT DEFAULT 'عام',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    store_id INTEGER NOT NULL DEFAULT 1
+    store_id INTEGER NOT NULL DEFAULT 1,
+    brand TEXT NOT NULL DEFAULT '',
+    purchase_price REAL NOT NULL DEFAULT 0,
+    unit TEXT NOT NULL DEFAULT 'piece',
+    pack_size REAL NOT NULL DEFAULT 1
    );
-   INSERT INTO products(id,name,barcode,price,stock,category,created_at,store_id)
-   SELECT id,name,barcode,price,stock,category,created_at,store_id
+   INSERT INTO products(
+    id,name,barcode,price,stock,category,created_at,store_id,
+    brand,purchase_price,unit,pack_size
+   )
+   SELECT
+    id,name,barcode,price,stock,category,created_at,store_id,
+    brand,purchase_price,unit,pack_size
    FROM products_legacy_migration;
    DROP TABLE products_legacy_migration;
    CREATE INDEX idx_products_store_id ON products(store_id);
@@ -695,6 +704,42 @@ async function api(req,res,url) {
  }
 
 
+
+ if (productEditMatch && req.method === 'DELETE') {
+  const id = Number(productEditMatch[1]);
+  try {
+   db.exec('BEGIN IMMEDIATE');
+
+   const existing = db.prepare(
+    'SELECT id FROM products WHERE id=? AND store_id=?'
+   ).get(id, storeId);
+
+   if (!existing) {
+    db.exec('ROLLBACK');
+    return send(res,404,{error:'المنتج غير موجود في متجرك'});
+   }
+
+   // حفظ بنود الفواتير التاريخية وفصلها عن سجل المنتج المحذوف.
+   db.prepare(
+    'UPDATE sale_items SET product_id=NULL WHERE product_id=? AND store_id=?'
+   ).run(id,storeId);
+
+   const result = db.prepare(
+    'DELETE FROM products WHERE id=? AND store_id=?'
+   ).run(id,storeId);
+
+   if (result.changes !== 1)
+    throw new Error('لم يتم حذف المنتج؛ أعد المحاولة');
+
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,deleted:true,id});
+  } catch(e) {
+   try { db.exec('ROLLBACK'); } catch (_) {}
+   return send(res,500,{error:e.message});
+  }
+ }
+
+
  if (p==='/api/daily-summary' && req.method==='GET') {
   const latest=db.prepare(
    'SELECT * FROM daily_closures WHERE store_id=? ORDER BY id DESC LIMIT 1'
@@ -792,6 +837,119 @@ async function api(req,res,url) {
   const getItems=db.prepare('SELECT name,price,quantity,subtotal,unit,base_quantity FROM sale_items WHERE sale_id=? AND store_id=? ORDER BY id');
   for(const sale of sales) sale.items=getItems.all(sale.id,storeId);
   return send(res,200,sales);
+ }
+
+
+ // NRS_SAFE_INVOICE_DELETE_V1
+ const invoiceDeleteMatch = p.match(/^\/api\/sales\/(\d+)$/);
+ if (invoiceDeleteMatch && req.method==='DELETE') {
+  const saleId=Number(invoiceDeleteMatch[1]);
+
+  if (!Number.isSafeInteger(saleId) || saleId<1)
+   return send(res,400,{error:'رقم الفاتورة غير صالح'});
+
+  try {
+   db.exec('BEGIN IMMEDIATE');
+   try {
+    const sale=db.prepare(
+     'SELECT id,total,store_id FROM sales WHERE id=? AND store_id=?'
+    ).get(saleId,storeId);
+
+    if (!sale) {
+     db.exec('ROLLBACK');
+     return send(res,404,{error:'الفاتورة غير موجودة في متجرك'});
+    }
+
+    // لا نحذف فاتورة دخلت في تقرير إغلاق سابق.
+    const closures=db.prepare(
+     'SELECT sale_ids FROM daily_closures WHERE store_id=?'
+    ).all(storeId);
+
+    for (const closure of closures) {
+     let ids;
+     try {
+      ids=JSON.parse(closure.sale_ids);
+     } catch (_) {
+      throw new Error('تعذر التحقق من تقارير الإغلاق؛ أُلغي الحذف لحماية الحسابات');
+     }
+     if (!Array.isArray(ids))
+      throw new Error('بيانات تقرير الإغلاق غير سليمة؛ أُلغي الحذف');
+     if (ids.some(id=>Number(id)===saleId))
+      throw new Error('لا يمكن حذف هذه الفاتورة لأنها مشمولة في تقرير إغلاق يومي');
+    }
+
+    const items=db.prepare(
+     `SELECT product_id,base_quantity,store_id,name
+      FROM sale_items WHERE sale_id=? AND store_id=? ORDER BY id`
+    ).all(saleId,storeId);
+
+    // إعادة الكمية الأساسية الفعلية التي خُصمت عند البيع.
+    const restore=db.prepare(
+     'UPDATE products SET stock=stock+? WHERE id=? AND store_id=?'
+    );
+
+    for (const item of items) {
+     // المنتج الذي حُذف سابقاً لا يوجد مخزون حالي لإرجاعه.
+     if (item.product_id===null || item.product_id===undefined) continue;
+
+     const baseQuantity=Number(item.base_quantity);
+     if (!Number.isFinite(baseQuantity) || baseQuantity<=0)
+      throw new Error(
+       'تعذر استرجاع مخزون المنتج «'+item.name+
+       '» بسبب نقص بيانات الكمية الأساسية. لم تُحذف الفاتورة.'
+      );
+
+     const product=db.prepare(
+      'SELECT id FROM products WHERE id=? AND store_id=?'
+     ).get(item.product_id,storeId);
+
+     if (!product)
+      throw new Error(
+       'تعذر العثور على المنتج الأصلي «'+item.name+
+       '» في هذا المحل. لم تُحذف الفاتورة.'
+      );
+
+     const result=restore.run(baseQuantity,item.product_id,storeId);
+     if (result.changes!==1)
+      throw new Error('تعذر إعادة مخزون المنتج «'+item.name+'»');
+    }
+
+    const deletedItems=db.prepare(
+     'DELETE FROM sale_items WHERE sale_id=? AND store_id=?'
+    ).run(saleId,storeId);
+
+    const deletedSale=db.prepare(
+     'DELETE FROM sales WHERE id=? AND store_id=?'
+    ).run(saleId,storeId);
+
+    if (deletedSale.changes!==1)
+     throw new Error('تعذر حذف الفاتورة؛ أُلغي التعديل');
+
+    db.exec('COMMIT');
+
+    return send(res,200,{
+     ok:true,
+     deleted:true,
+     saleId,
+     restoredItems:items.filter(x=>x.product_id!==null).length,
+     message:'تم حذف الفاتورة وإعادة كميات المنتجات إلى المخزون'
+    });
+   } catch(e) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    throw e;
+   }
+  } catch(e) {
+   const message=String(e.message||'');
+   const status=(
+    message.includes('لا يمكن حذف') ||
+    message.includes('تعذر') ||
+    message.includes('غير موجود') ||
+    message.includes('غير سليمة')
+   ) ? 409 : 500;
+
+   console.error('invoice-delete:',e);
+   return send(res,status,{error:message||'تعذر حذف الفاتورة'});
+  }
  }
 
  if (p==='/api/sales' && req.method==='POST') {
