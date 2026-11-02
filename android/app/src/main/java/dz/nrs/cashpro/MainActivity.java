@@ -68,7 +68,7 @@ public class MainActivity extends Activity {
         layout.setBackgroundColor(Color.WHITE);
 
         TextView status = new TextView(this);
-        status.setText("N.R.S. CASH PRO • Android");
+        status.setText("cash.pro.S.M.G.R • Android");
         status.setTextSize(16);
         status.setTextColor(Color.WHITE);
         status.setBackgroundColor(Color.rgb(16, 88, 62));
@@ -141,7 +141,7 @@ storeHomeButton.setOnClickListener(v ->
 
                                 PrintDocumentAdapter adapter =
                                     web.createPrintDocumentAdapter(
-                                        "NRS-CASH-PRO-Receipt"
+                                        "cash-pro-S-M-G-R-Receipt"
                                     );
 
                                 if (adapter == null) {
@@ -160,7 +160,7 @@ storeHomeButton.setOnClickListener(v ->
                                         .build();
 
                                 android.print.PrintJob job = manager.print(
-                                    "N.R.S. CASH PRO - Invoice",
+                                    "cash.pro.S.M.G.R - Invoice",
                                     adapter,
                                     attributes
                                 );

@@ -18,18 +18,32 @@ android {
         applicationId 'dz.nrs.cashpro'
         minSdk 23
         targetSdk 28
-        versionCode 11
-        versionName "1.1.9"
+        versionCode 12
+        versionName "1.2.0"
 
         ndk {
             abiFilters "arm64-v8a"
         }
     }
-    // NRS_SIDE_BY_SIDE_TEST_BUILD_V1
+    // RELEASE_SIGNING_CASH_PRO_SMGR_V1
+    signingConfigs {
+        release {
+            storeFile file("release-key.jks")
+            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            keyAlias System.getenv("ANDROID_KEY_ALIAS")
+            keyPassword System.getenv("ANDROID_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix ".test"
             versionNameSuffix "-test"
+        }
+
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
         }
     }
 

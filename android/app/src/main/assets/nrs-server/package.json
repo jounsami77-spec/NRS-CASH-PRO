@@ -1,8 +1,8 @@
 {
-  "name": "nrs-cash-pro",
+  "name": "cash-pro-smgr",
   "version": "2.0.0",
   "private": true,
-  "description": "N.R.S. CASH PRO",
+  "description": "cash.pro.S.M.G.R",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

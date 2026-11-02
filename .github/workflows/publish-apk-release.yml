@@ -1,16 +1,16 @@
-name: Publish NRS Cash Pro APK
+name: Publish cash.pro.S.M.G.R Official Release
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing release tag to build and publish
+        description: Official release tag
         required: true
-        default: v1.1.3
+        default: v1.2.0
         type: string
   push:
     tags:
-      - 'v1.*'
+      - 'v1.2.0'
 
 permissions:
   contents: write
@@ -18,70 +18,153 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ github.event_name == 'push' && github.ref || 'main' }}
+
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RELEASE_TAG" = "v1.2.0"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
 
       - name: Prepare embedded Node.js runtime
         run: bash scripts/prepare-node-mobile-runtime.sh
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK, NDK and CMake
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
+
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT"
+
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
           fi
+
           test -x "$SDKMANAGER"
+
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build APK
-        working-directory: android
-        run: gradle --no-daemon assembleDebug
+      - name: Restore permanent release signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
 
-      - name: Validate APK
+          test -n "$ANDROID_KEYSTORE_BASE64"
+
+          mkdir -p android/app
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" |
+            base64 --decode > android/app/release-key.jks
+
+          test -s android/app/release-key.jks
+          chmod 600 android/app/release-key.jks
+
+          keytool -list \
+            -keystore android/app/release-key.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+          echo "Permanent signing key verified."
+
+      - name: Build official signed Release APK
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -p android :app:assembleRelease
+
+      - name: Validate official APK
         shell: bash
         run: |
           set -euo pipefail
-          APK="android/app/build/outputs/apk/debug/app-debug.apk"
+
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          OUT="cash.pro.S.M.G.R-1.2.0.apk"
+
           test -s "$APK"
+
           SIZE="$(stat -c '%s' "$APK")"
           echo "APK size: $SIZE bytes"
-          test "$SIZE" -gt 10000
-          unzip -t "$APK"
-          unzip -Z1 "$APK" > /tmp/nrs-apk-contents.txt
-          grep -Fxq 'AndroidManifest.xml' /tmp/nrs-apk-contents.txt
-          grep -Eq '(^|/)classes[0-9]*\.dex$' /tmp/nrs-apk-contents.txt
-          cp "$APK" NRS-CASH-PRO-1.1.3.apk
-          sha256sum NRS-CASH-PRO-1.1.3.apk
+          test "$SIZE" -gt 10000000
 
-      - name: Publish release with APK
+          unzip -t "$APK"
+          unzip -Z1 "$APK" > /tmp/cash-pro-apk-contents.txt
+
+          grep -Fxq 'AndroidManifest.xml' /tmp/cash-pro-apk-contents.txt
+          grep -Eq '(^|/)classes[0-9]*\.dex$' /tmp/cash-pro-apk-contents.txt
+          grep -q '^lib/arm64-v8a/' /tmp/cash-pro-apk-contents.txt
+
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          BADGING="$("$AAPT" dump badging "$APK")"
+          echo "$BADGING" | head -5
+
+          echo "$BADGING" |
+            grep -F "package: name='dz.nrs.cashpro' versionCode='12' versionName='1.2.0'"
+
+          cp "$APK" "$OUT"
+
+          echo
+          echo "===== FINAL APK SHA256 ====="
+          sha256sum "$OUT"
+
+      - name: Publish official signed release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
-          name: N.R.S. CASH PRO 1.1.3
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: cash.pro.S.M.G.R 1.2.0
           body: |
-            N.R.S. CASH PRO Android release 1.1.3 (versionCode 5).
+            Official Android Release: cash.pro.S.M.G.R 1.2.0
 
-            Download NRS-CASH-PRO-1.1.3.apk below.
-            Invoice printing is still pending further testing.
-          files: NRS-CASH-PRO-1.1.3.apk
+            - Signed with the permanent application release key.
+            - Package ID: dz.nrs.cashpro
+            - Version code: 12
+            - Architecture: arm64-v8a
+            - Release build, not Debug or Test.
+
+            Keep the same signing key for all future application updates.
+          files: cash.pro.S.M.G.R-1.2.0.apk
           fail_on_unmatched_files: true
           make_latest: true
         env:
