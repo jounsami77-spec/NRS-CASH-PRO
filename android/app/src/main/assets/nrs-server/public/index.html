@@ -59,6 +59,13 @@ main{max-width:900px;margin:auto;padding:14px;display:grid;gap:14px}
 .small-note{font-size:12px;color:var(--muted);line-height:1.7}
 .hidden{display:none!important}
 #receipt{display:none}
+/* NRS_PRINT_PREVIEW_HIDE_V1 */
+@media print{
+  #nrs-invoice-preview-overlay{
+    display:none!important;
+    visibility:hidden!important;
+  }
+}
 @media(min-width:760px){body{padding-bottom:20px}header{padding:16px 24px}main{padding:22px;grid-template-columns:1fr 1fr}.page.active{display:none}.page.active#page-cashier{display:grid;grid-template-columns:1fr;gap:14px;grid-column:1/-1}.page.active#page-cashier .hero,.page.active#page-cashier .stats{grid-column:1/-1}.page.active#page-products,.page.active#page-sales,.page.active#page-settings{grid-column:1/-1}.bottomnav{position:static;max-width:560px;margin:10px auto 0;border:1px solid var(--line);border-radius:18px;padding:5px}.navbtn{min-height:50px}body{display:flex;flex-direction:column}main{width:100%;flex:1}.panel{padding:18px}}
 @media print{body{background:#fff!important;color:#000!important;padding:0!important}.app-shell,header,main,.bottomnav{display:none!important}#receipt{display:block!important;color:#000!important;background:#fff!important;padding:12px;font-family:Arial,sans-serif;direction:rtl}#receipt h2,#receipt p{color:#000!important;text-align:center}#receipt table{width:100%;border-collapse:collapse;margin:15px 0}#receipt th,#receipt td{border-bottom:1px solid #aaa;padding:7px 3px;text-align:right;font-size:12px}#receipt .r-total{font-weight:bold;font-size:18px;border-top:2px solid #000;padding-top:10px}#receipt .r-footer{white-space:pre-wrap;text-align:center;margin-top:20px}}
 
@@ -1098,7 +1105,7 @@ $('addProduct').onclick=async()=>{
 
 function receiptHTML(saleId,items,total,date){
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const rows=items.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.quantity} ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price)} دج / ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price*x.quantity)} دج</td></tr>`).join('');
+ const rows=items.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.quantity} ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price)} دج / ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.subtotal!=null?Number(x.subtotal):Number(x.price)*Number(x.quantity))} دج</td></tr>`).join('');
  return `<h2>${esc(settings.shopName||'cash.pro.S.M.G.R')}</h2>
  <p>${esc(settings.address||'')}</p><p>${esc(settings.phone||'')}</p><hr>
  <p>فاتورة رقم: ${esc(saleId)}</p><p>${esc(date||new Date().toLocaleString('ar-DZ'))}</p>

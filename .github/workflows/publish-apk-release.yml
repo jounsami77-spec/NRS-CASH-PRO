@@ -6,11 +6,11 @@ on:
       release_tag:
         description: Official release tag
         required: true
-        default: v1.2.0
+        default: v1.2.1
         type: string
   push:
     tags:
-      - 'v1.2.0'
+      - 'v1.2.1'
 
 permissions:
   contents: write
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$RELEASE_TAG" = "v1.2.0"
+          test "$RELEASE_TAG" = "v1.2.1"
           test -n "$ANDROID_KEYSTORE_PASSWORD"
           test -n "$ANDROID_KEY_ALIAS"
           test -n "$ANDROID_KEY_PASSWORD"
@@ -117,7 +117,7 @@ jobs:
           set -euo pipefail
 
           APK="android/app/build/outputs/apk/release/app-release.apk"
-          OUT="cash.pro.S.M.G.R-1.2.0.apk"
+          OUT="cash.pro.S.M.G.R-1.2.1.apk"
 
           test -s "$APK"
 
@@ -141,7 +141,7 @@ jobs:
           echo "$BADGING" | head -5
 
           echo "$BADGING" |
-            grep -F "package: name='dz.nrs.cashpro' versionCode='12' versionName='1.2.0'"
+            grep -F "package: name='dz.nrs.cashpro' versionCode='13' versionName='1.2.1'"
 
           cp "$APK" "$OUT"
 
@@ -153,9 +153,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          name: cash.pro.S.M.G.R 1.2.0
+          name: cash.pro.S.M.G.R 1.2.1
           body: |
-            Official Android Release: cash.pro.S.M.G.R 1.2.0
+            Official Android Release: cash.pro.S.M.G.R 1.2.1
 
             - Signed with the permanent application release key.
             - Package ID: dz.nrs.cashpro
@@ -164,7 +164,7 @@ jobs:
             - Release build, not Debug or Test.
 
             Keep the same signing key for all future application updates.
-          files: cash.pro.S.M.G.R-1.2.0.apk
+          files: cash.pro.S.M.G.R-1.2.1.apk
           fail_on_unmatched_files: true
           make_latest: true
         env:
