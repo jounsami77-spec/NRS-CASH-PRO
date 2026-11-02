@@ -1,5 +1,8 @@
 'use strict';
 
+// NRS_ANDROID_PRODUCTION_MODE_V1
+process.env.NODE_ENV = 'production';
+
 const fs = require('node:fs');
 const path = require('node:path');
 

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#071b15">
-<title>N.R.S. CASH PRO</title>
+<title>cash.pro.S.M.G.R</title>
 <style>
 :root{color-scheme:dark;--bg:#07130f;--panel:#10221b;--panel2:#162c23;--line:#29483a;--accent:#18a66a;--accent2:#087b4b;--text:#f2fbf5;--muted:#9eb8a9;--danger:#b94b50;--radius:19px}
 *{box-sizing:border-box}
@@ -197,7 +197,7 @@ body.authenticated #dzLogin{display:none!important}
 .brand-heading h1{font-size:clamp(16px,4.5vw,22px)}.brand-credit{font-size:9px;padding:3px 5px}}
 
 
-/* N.R.S. CASH PRO — responsive brand identity */
+/* cash.pro.S.M.G.R — responsive brand identity */
 .brand-heading{
   display:flex;
   align-items:center;
@@ -509,7 +509,7 @@ html, body {
 </head>
 <body>
 <section id="dzLogin">
- <h1>🛒 N.R.S. CASH PRO</h1>
+ <h1>🛒 cash.pro.S.M.G.R</h1>
  <h2>تسجيل الدخول إلى المحل</h2>
  <form id="dzLoginForm">
   <label>اسم المستخدم</label><input id="dzUsername" autocomplete="username" required>
@@ -532,7 +532,7 @@ html, body {
       <div class="logo">🛒</div>
       <div class="brand-heading">
         <div class="brand-heading">
-        <h1 id="brandTitle">N.R.S. CASH PRO</h1>
+        <h1 id="brandTitle">cash.pro.S.M.G.R</h1>
         <span class="brand-credit">DEVELOPED BY S.M.G.N.R</span>
       </div>
       </div>
@@ -655,7 +655,7 @@ html, body {
   </div>
   <div class="panel">
     <h2>ℹ️ حول النظام</h2>
-    <div class="item"><div class="item-main"><div class="item-name">N.R.S. CASH PRO</div><div class="item-meta">واجهة هاتف · قاعدة SQLite · إدارة مبيعات</div></div><span>🇩🇿</span></div>
+    <div class="item"><div class="item-main"><div class="item-name">cash.pro.S.M.G.R</div><div class="item-meta">واجهة هاتف · قاعدة SQLite · إدارة مبيعات</div></div><span>🇩🇿</span></div>
   </div>
 </section>
 </main>
@@ -731,7 +731,7 @@ document.querySelectorAll('.swatch').forEach(b=>b.addEventListener('click',()=>a
 async function loadSettings(){
  try{
   settings=await request('/api/settings');
-  $('shopName').value=settings.shopName||'N.R.S. CASH PRO';
+  $('shopName').value=settings.shopName||'cash.pro.S.M.G.R';
   $('shopPhone').value=settings.phone||'';
   $('shopAddress').value=settings.address||'';
   $('receiptFooter').value=settings.footer||'شكراً لثقتكم بنا ❤️';
@@ -739,7 +739,7 @@ async function loadSettings(){
   $('autoCloseEnabled').checked=settings.autoCloseEnabled==='true';
   $('autoCloseHours').value=['8','10','12'].includes(settings.autoCloseHours) ? settings.autoCloseHours : '8';
   applyTheme(settings.theme);
-  $('brandTitle').textContent=settings.shopName||'N.R.S. CASH PRO';
+  $('brandTitle').textContent=settings.shopName||'cash.pro.S.M.G.R';
   $('brandSub').textContent=settings.manager?'المسؤول: '+settings.manager:'نظام تسيير المبيعات الذكي';
   $('accountLabel').textContent=settings.manager||'مدير المحل';
  }catch(e){msg('settingsStatus','تعذر تحميل الإعدادات: '+e.message)}
@@ -747,7 +747,7 @@ async function loadSettings(){
 $('saveSettings').onclick=async()=>{
  try{
   const data={
-   shopName:$('shopName').value.trim()||'N.R.S. CASH PRO',
+   shopName:$('shopName').value.trim()||'cash.pro.S.M.G.R',
    phone:$('shopPhone').value.trim(),
    address:$('shopAddress').value.trim(),
    footer:$('receiptFooter').value.trim(),
@@ -1099,7 +1099,7 @@ $('addProduct').onclick=async()=>{
 function receiptHTML(saleId,items,total,date){
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const rows=items.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.quantity} ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price)} دج / ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price*x.quantity)} دج</td></tr>`).join('');
- return `<h2>${esc(settings.shopName||'N.R.S. CASH PRO')}</h2>
+ return `<h2>${esc(settings.shopName||'cash.pro.S.M.G.R')}</h2>
  <p>${esc(settings.address||'')}</p><p>${esc(settings.phone||'')}</p><hr>
  <p>فاتورة رقم: ${esc(saleId)}</p><p>${esc(date||new Date().toLocaleString('ar-DZ'))}</p>
  <table><thead><tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>المجموع</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1615,7 +1615,7 @@ $('dzLoginForm').onsubmit=async e=>{
       root.innerHTML =
         '<div class="inv-sheet">' +
           '<div class="inv-heading">' +
-            '<h1>N.R.S. CASH PRO 🇩🇿</h1>' +
+            '<h1>cash.pro.S.M.G.R 🇩🇿</h1>' +
             '<div>قائمة المخزون والمنتجات</div>' +
           '</div>' +
           '<div class="inv-meta">تاريخ الطباعة: ' +

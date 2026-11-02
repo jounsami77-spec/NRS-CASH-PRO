@@ -311,7 +311,7 @@ async function api(req,res,url) {
  if (req.method === 'OPTIONS') return send(res,200,{ok:true});
 
  if (p === '/api/status' && req.method === 'GET')
-  return send(res,200,{ok:true,app:'N.R.S.-CASH.PRO',version:'2.0'});
+  return send(res,200,{ok:true,app:'cash.pro.S.M.G.R',version:'2.0'});
 
  if (p === '/api/login' && req.method === 'POST') {
   try {
@@ -1151,7 +1151,7 @@ if(autoCloseTimer.unref) autoCloseTimer.unref();
 try { autoCloseDuePeriods(); } catch(e) { console.error('[auto-daily-close]',e.message); }
 
 server.listen(Number(process.env.PORT||3001),'0.0.0.0',()=>{
- console.log('N.R.S.-CASH.PRO: http://127.0.0.1:'+(process.env.PORT||3001));
+ console.log('cash.pro.S.M.G.R: http://127.0.0.1:'+(process.env.PORT||3001));
  console.log('Admin panel: http://127.0.0.1:'+(process.env.PORT||3001)+'/admin');
  console.log('SQLite: '+path.join(DATA,'cashier.db'));
 });
