@@ -25,6 +25,14 @@ android {
             abiFilters "arm64-v8a"
         }
     }
+    // NRS_SIDE_BY_SIDE_TEST_BUILD_V1
+    buildTypes {
+        debug {
+            applicationIdSuffix ".test"
+            versionNameSuffix "-test"
+        }
+    }
+
     externalNativeBuild {
         cmake {
             path file("src/main/cpp/CMakeLists.txt")
