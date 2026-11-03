@@ -11,7 +11,7 @@ JNIEXPORT jint JNICALL
 Java_dz_nrs_cashpro_MainActivity_startNodeWithArguments(
         JNIEnv* env, jobject, jobjectArray javaArgs) {
 
-    if (javaArgs == nullptr || env->GetArrayLength(javaArgs) < 7)
+    if (javaArgs == nullptr || env->GetArrayLength(javaArgs) < 8)
         return -10;
 
     std::vector<std::string> values;
@@ -33,7 +33,12 @@ Java_dz_nrs_cashpro_MainActivity_startNodeWithArguments(
     setenv("DATA_DIR", values[2].c_str(), 1);
     setenv("TMPDIR", values[3].c_str(), 1);
     setenv("HOME", values[4].c_str(), 1);
-    setenv("INITIAL_ADMIN_PASSWORD", values[6].c_str(), 1);
+    setenv("NRS_APP_EDITION", values[7].c_str(), 1);
+    if (values[7] == "owner") {
+        setenv("INITIAL_ADMIN_PASSWORD", values[6].c_str(), 1);
+    } else {
+        setenv("INITIAL_ADMIN_PASSWORD", "", 1);
+    }
     setenv("UV_THREADPOOL_SIZE", "4", 0);
 
     if (chdir(values[5].c_str()) != 0) return -13;

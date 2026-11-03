@@ -308,10 +308,12 @@ function startTrialIfNeeded(storeId) {
 
 async function api(req,res,url) {
  const p = url.pathname;
+ if (process.env.NRS_APP_EDITION === 'customer' && p.startsWith('/api/admin/'))
+  return send(res,404,{error:'هذه الواجهة غير متاحة في نسخة الزبون'});
  if (req.method === 'OPTIONS') return send(res,200,{ok:true});
 
  if (p === '/api/status' && req.method === 'GET')
-  return send(res,200,{ok:true,app:'cash.pro.S.M.G.R',version:'2.0'});
+  return send(res,200,{ok:true,app:'cash.pro.S.M.G.R',version:'2.0',edition:process.env.NRS_APP_EDITION || 'owner'});
 
  if (p === '/api/login' && req.method === 'POST') {
   try {
@@ -320,6 +322,8 @@ async function api(req,res,url) {
    const password=String(data.password||'');
    if (!username || !password) return send(res,400,{error:'أدخل اسم المستخدم وكلمة المرور'});
    const user=db.prepare('SELECT * FROM users WHERE username=?').get(username);
+   if (process.env.NRS_APP_EDITION === 'customer' && user?.role === 'super_admin')
+    return send(res,403,{error:'حساب الإدارة غير مسموح في نسخة الزبون'});
    if (!user || !user.active || !verifyPassword(password,user.password_hash))
     return send(res,401,{error:'اسم المستخدم أو كلمة المرور غير صحيحة'});
    if (user.role !== 'super_admin') {
@@ -1128,6 +1132,11 @@ const server=http.createServer(async(req,res)=>{
   catch(e) { console.error(e); return send(res,500,{error:'حدث خطأ داخلي في الخادم'}); }
  }
  let file;
+ if (process.env.NRS_APP_EDITION === 'customer' &&
+     (url.pathname === '/admin' || url.pathname === '/admin/')) {
+   res.writeHead(404, {'Content-Type':'text/plain; charset=utf-8'});
+   return res.end('Not found');
+ }
  if(url.pathname==='/admin' || url.pathname==='/admin/') file=path.join(PUBLIC,'admin.html');
  else {
   let pathname;

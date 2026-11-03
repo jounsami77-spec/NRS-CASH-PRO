@@ -45,14 +45,22 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
+      - name: Build owner and customer debug APKs
         working-directory: android
-        run: gradle --no-daemon assembleDebug
+        run: gradle --no-daemon :app:assembleOwnerDebug :app:assembleCustomerDebug
 
-      - name: Upload APK artifact
+      - name: Upload owner APK
         uses: actions/upload-artifact@v4
         with:
-          name: nrs-cash-pro-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: nrs-cash-pro-owner-debug
+          path: android/app/build/outputs/apk/owner/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload customer APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrs-cash-pro-customer-debug
+          path: android/app/build/outputs/apk/customer/debug/*.apk
           if-no-files-found: error
           retention-days: 7

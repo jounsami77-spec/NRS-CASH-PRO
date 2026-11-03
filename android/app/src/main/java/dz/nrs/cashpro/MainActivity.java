@@ -442,10 +442,12 @@ storeHomeButton.setOnClickListener(v ->
         final java.io.File tmp = getCacheDir();
         final java.io.File home = getFilesDir();
 
+        final String edition = BuildConfig.NRS_APP_EDITION;
         final String password;
         try {
             nrsCopyAssetTree("nrs-server", root);
-            password = nrsGetOrCreateInitialPassword();
+            password = "owner".equals(edition)
+                ? nrsGetOrCreateInitialPassword() : "";
             if (!new java.io.File(root, "server.js").isFile()
                     || !new java.io.File(root, "mobile-entry.js").isFile()) {
                 throw new java.io.IOException("Server assets are incomplete");
@@ -475,7 +477,8 @@ storeHomeButton.setOnClickListener(v ->
                             tmp.getAbsolutePath(),
                             home.getAbsolutePath(),
                             root.getAbsolutePath(),
-                            password
+                            password,
+                            edition
                         });
 
                         android.util.Log.e("NRS_STARTUP",
@@ -554,7 +557,9 @@ storeHomeButton.setOnClickListener(v ->
                 // اختبار: فصل نافذة الإعداد عن لحظة بدء تحميل WebView.
                 target.postDelayed(() -> {
                     if (!isFinishing() && !isDestroyed()) {
-                        nrsShowFirstCredentials(password);
+                        if ("owner".equals(edition)) {
+                            nrsShowFirstCredentials(password);
+                        }
                     }
                 }, 3000);
             });

@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const DATA = process.env.DATA_DIR || path.join(__dirname, 'data');
+const APP_EDITION = process.env.NRS_APP_EDITION || 'owner';
 fs.mkdirSync(DATA, { recursive: true });
 
 const db = new DatabaseSync(path.join(DATA, 'cashier.db'));
@@ -45,6 +46,9 @@ try {
   // لا نغيّر حسابات موجودة عند إعادة تشغيل Railway.
   if (existing > 0) {
     console.log('توجد حسابات بالفعل؛ لم يتم تغيير أي حساب.');
+  } else if (APP_EDITION === 'customer') {
+    console.log('نسخة الزبون: لم يتم إنشاء مدير عام.');
+    console.log('يلزم ربط حساب الزبون بخادم المصادقة قبل تسجيل الدخول.');
   } else {
     const password = process.env.INITIAL_ADMIN_PASSWORD;
 

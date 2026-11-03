@@ -8,6 +8,25 @@ android {
     namespace 'dz.nrs.cashpro'
     compileSdk 35
 
+    buildFeatures {
+        buildConfig true
+    }
+
+    flavorDimensions += 'edition'
+    productFlavors {
+        owner {
+            dimension 'edition'
+            buildConfigField 'String', 'NRS_APP_EDITION', '"owner"'
+            manifestPlaceholders = [appLabel: 'cash.pro.S.M.G.R']
+        }
+        customer {
+            dimension 'edition'
+            applicationIdSuffix '.customer'
+            buildConfigField 'String', 'NRS_APP_EDITION', '"customer"'
+            manifestPlaceholders = [appLabel: 'cash.pro - الزبون']
+        }
+    }
+
     defaultConfig {
         externalNativeBuild {
             cmake {

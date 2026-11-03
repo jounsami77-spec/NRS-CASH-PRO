@@ -532,6 +532,18 @@ html, body {
  <p id="dzLoginStatus" class="login-error"></p>
  <p class="small-note">إذا انتهت التجربة أو تعذر الدخول، تواصل مع مدير النظام.</p>
 </section>
+<script>
+fetch('/api/status').then(r=>r.json()).then(info=>{
+ if(info.edition==='customer'){
+  const admin=document.getElementById('generalAdminLogin');
+  if(admin) admin.hidden=true;
+  const note=document.createElement('p');
+  note.textContent='نسخة الزبون: يلزم ربط حسابك بخادم الإدارة قبل تسجيل الدخول. لا تستخدم بيانات مدير النظام هنا.';
+  note.style.cssText='margin:12px 0;padding:12px;border:1px solid #c99;border-radius:10px;line-height:1.8';
+  document.getElementById('dzLogin')?.appendChild(note);
+ }
+}).catch(()=>{});
+</script>
 <div class="app-shell">
 <header>
   <div class="topline">
