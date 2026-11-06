@@ -6,6 +6,10 @@ import android.print.PrintDocumentAdapter;
 import android.print.PrintAttributes;
 import android.print.PrintManager;
 import android.content.Context;
+import android.content.Intent;
+import android.os.Build;
+import android.provider.Settings;
+import androidx.core.content.FileProvider;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
@@ -77,6 +81,21 @@ public class MainActivity extends Activity {
         status.setPadding(16, 14, 16, 14);
         status.setGravity(Gravity.CENTER_VERTICAL);
         layout.addView(status);
+
+// NRS_GITHUB_UPDATE_BUTTON_V1
+Button updateButton = new Button(this);
+updateButton.setText("فحص التحديث");
+updateButton.setAllCaps(false);
+updateButton.setTextSize(14);
+updateButton.setTextColor(Color.WHITE);
+updateButton.setBackgroundTintList(
+    android.content.res.ColorStateList.valueOf(Color.rgb(31, 93, 145))
+);
+layout.addView(updateButton, new LinearLayout.LayoutParams(
+    LinearLayout.LayoutParams.MATCH_PARENT,
+    LinearLayout.LayoutParams.WRAP_CONTENT
+));
+updateButton.setOnClickListener(v -> nrsCheckForUpdate(updateButton));
 
 // NRS_NATIVE_STORE_RETURN_BUTTON_V1
 Button storeHomeButton = new Button(this);
@@ -436,6 +455,324 @@ storeHomeButton.setOnClickListener(v ->
     @Override
     public void onBackPressed() {
         super.onBackPressed();
+    }
+
+
+    // NRS_GITHUB_UPDATER_IMPLEMENTATION_V1
+    private void nrsCheckForUpdate(final Button button) {
+        if (!"dz.nrs.cashpro".equals(BuildConfig.APPLICATION_ID)) {
+            Toast.makeText(this,
+                "التحديث الرسمي مخصص لنسخة المالك الرسمية.",
+                Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        button.setEnabled(false);
+        button.setText("جارٍ فحص التحديث...");
+
+        new Thread(() -> {
+            java.io.File downloaded = null;
+
+            try {
+                final String api =
+                    "https://api.github.com/repos/jounsami77-spec/"
+                    + "NRS-CASH-PRO/releases/latest";
+
+                java.net.HttpURLConnection apiConnection = null;
+                org.json.JSONObject release;
+
+                try {
+                    apiConnection = (java.net.HttpURLConnection)
+                        new java.net.URL(api).openConnection();
+                    apiConnection.setRequestMethod("GET");
+                    apiConnection.setConnectTimeout(15000);
+                    apiConnection.setReadTimeout(20000);
+                    apiConnection.setUseCaches(false);
+                    apiConnection.setInstanceFollowRedirects(true);
+                    apiConnection.setRequestProperty(
+                        "Accept", "application/vnd.github+json");
+                    apiConnection.setRequestProperty(
+                        "User-Agent", "cash-pro-S-M-G-R-Android-Updater");
+
+                    int code = apiConnection.getResponseCode();
+                    if (code != 200) {
+                        throw new java.io.IOException(
+                            "GitHub API HTTP " + code);
+                    }
+
+                    java.io.ByteArrayOutputStream jsonBytes =
+                        new java.io.ByteArrayOutputStream();
+                    try (java.io.InputStream in =
+                             apiConnection.getInputStream()) {
+                        byte[] buffer = new byte[8192];
+                        int count;
+                        int total = 0;
+                        while ((count = in.read(buffer)) != -1) {
+                            total += count;
+                            if (total > 2 * 1024 * 1024) {
+                                throw new java.io.IOException(
+                                    "Release metadata is too large");
+                            }
+                            jsonBytes.write(buffer, 0, count);
+                        }
+                    }
+
+                    release = new org.json.JSONObject(
+                        jsonBytes.toString("UTF-8"));
+                } finally {
+                    if (apiConnection != null) {
+                        apiConnection.disconnect();
+                    }
+                }
+
+                if (release.optBoolean("draft", true)
+                        || release.optBoolean("prerelease", true)) {
+                    throw new java.io.IOException(
+                        "Latest GitHub release is not a stable release");
+                }
+
+                String tag = release.optString("tag_name", "");
+                if (!tag.matches("v[0-9]+\\.[0-9]+\\.[0-9]+")) {
+                    throw new java.io.IOException(
+                        "Invalid release tag");
+                }
+
+                String version = tag.substring(1);
+                String expectedName =
+                    "cash.pro.S.M.G.R-" + version + ".apk";
+
+                org.json.JSONArray assets =
+                    release.optJSONArray("assets");
+
+                if (assets == null) {
+                    throw new java.io.IOException(
+                        "Release has no APK assets");
+                }
+
+                String assetUrl = null;
+                String expectedDigest = null;
+
+                for (int i = 0; i < assets.length(); i++) {
+                    org.json.JSONObject asset = assets.getJSONObject(i);
+                    if (!expectedName.equals(
+                            asset.optString("name", ""))) {
+                        continue;
+                    }
+
+                    assetUrl = asset.optString("browser_download_url", "");
+                    expectedDigest = asset.optString("digest", "");
+                    break;
+                }
+
+                if (assetUrl == null || assetUrl.isEmpty()) {
+                    throw new java.io.IOException(
+                        "Official owner APK was not found");
+                }
+
+                if (!assetUrl.startsWith(
+                        "https://github.com/jounsami77-spec/"
+                        + "NRS-CASH-PRO/releases/download/")) {
+                    throw new java.io.IOException(
+                        "APK download URL is not trusted");
+                }
+
+                if (expectedDigest == null
+                        || !expectedDigest.matches("sha256:[0-9a-fA-F]{64}")) {
+                    throw new java.io.IOException(
+                        "GitHub release does not provide a valid SHA-256 digest");
+                }
+
+                String digestHex = expectedDigest.substring(7)
+                    .toLowerCase(java.util.Locale.ROOT);
+
+                java.io.File updateDir =
+                    new java.io.File(getCacheDir(), "updates");
+
+                if (!updateDir.exists() && !updateDir.mkdirs()) {
+                    throw new java.io.IOException(
+                        "Cannot create update cache");
+                }
+
+                downloaded = new java.io.File(
+                    updateDir, expectedName + ".download");
+
+                java.net.HttpURLConnection apkConnection = null;
+                java.security.MessageDigest sha =
+                    java.security.MessageDigest.getInstance("SHA-256");
+
+                try {
+                    apkConnection = (java.net.HttpURLConnection)
+                        new java.net.URL(assetUrl).openConnection();
+                    apkConnection.setRequestMethod("GET");
+                    apkConnection.setConnectTimeout(20000);
+                    apkConnection.setReadTimeout(90000);
+                    apkConnection.setUseCaches(false);
+                    apkConnection.setInstanceFollowRedirects(true);
+                    apkConnection.setRequestProperty(
+                        "User-Agent", "cash-pro-S-M-G-R-Android-Updater");
+
+                    int code = apkConnection.getResponseCode();
+                    if (code != 200) {
+                        throw new java.io.IOException(
+                            "APK download HTTP " + code);
+                    }
+
+                    if (apkConnection.getURL() == null
+                            || !"https".equalsIgnoreCase(
+                                apkConnection.getURL().getProtocol())) {
+                        throw new java.io.IOException(
+                            "APK download did not remain on HTTPS");
+                    }
+
+                    long total = 0;
+                    try (java.io.InputStream in =
+                             apkConnection.getInputStream();
+                         java.io.FileOutputStream out =
+                             new java.io.FileOutputStream(downloaded)) {
+                        byte[] buffer = new byte[16384];
+                        int count;
+                        while ((count = in.read(buffer)) != -1) {
+                            total += count;
+                            if (total > 250L * 1024L * 1024L) {
+                                throw new java.io.IOException(
+                                    "APK exceeds maximum allowed size");
+                            }
+                            sha.update(buffer, 0, count);
+                            out.write(buffer, 0, count);
+                        }
+                        out.getFD().sync();
+                    }
+                } finally {
+                    if (apkConnection != null) {
+                        apkConnection.disconnect();
+                    }
+                }
+
+                byte[] actualHash = sha.digest();
+                byte[] expectedHash = new byte[32];
+                for (int i = 0; i < expectedHash.length; i++) {
+                    expectedHash[i] = (byte) Integer.parseInt(
+                        digestHex.substring(i * 2, i * 2 + 2), 16);
+                }
+
+                if (!java.security.MessageDigest.isEqual(
+                        actualHash, expectedHash)) {
+                    throw new java.io.IOException(
+                        "APK SHA-256 verification failed");
+                }
+
+                android.content.pm.PackageInfo archive =
+                    getPackageManager().getPackageArchiveInfo(
+                        downloaded.getAbsolutePath(), 0);
+
+                if (archive == null || archive.applicationInfo == null) {
+                    throw new java.io.IOException(
+                        "Downloaded file is not a valid Android APK");
+                }
+
+                if (!"dz.nrs.cashpro".equals(archive.packageName)) {
+                    throw new java.io.IOException(
+                        "APK package ID does not match this application");
+                }
+
+                if (archive.versionCode <= BuildConfig.VERSION_CODE) {
+                    downloaded.delete();
+                    runOnUiThread(() -> {
+                        button.setEnabled(true);
+                        button.setText("فحص التحديث");
+                        Toast.makeText(this,
+                            "أنت تستخدم أحدث إصدار متاح.",
+                            Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+
+                java.io.File finalApk = new java.io.File(
+                    updateDir, expectedName);
+
+                if (finalApk.exists() && !finalApk.delete()) {
+                    throw new java.io.IOException(
+                        "Cannot replace cached update");
+                }
+
+                if (!downloaded.renameTo(finalApk)) {
+                    throw new java.io.IOException(
+                        "Cannot finalize downloaded APK");
+                }
+
+                downloaded = finalApk;
+
+                final java.io.File verifiedApk = finalApk;
+                runOnUiThread(() -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= 26
+                                && !getPackageManager()
+                                    .canRequestPackageInstalls()) {
+                            Intent settingsIntent = new Intent(
+                                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                Uri.parse("package:" + getPackageName())
+                            );
+                            startActivity(settingsIntent);
+                            Toast.makeText(this,
+                                "اسمح بتثبيت تحديثات هذا التطبيق، ثم اضغط فحص التحديث مرة أخرى.",
+                                Toast.LENGTH_LONG).show();
+                            return;
+                        }
+
+                        Uri apkUri = FileProvider.getUriForFile(
+                            this,
+                            getPackageName() + ".fileprovider",
+                            verifiedApk
+                        );
+
+                        Intent install = new Intent(Intent.ACTION_VIEW);
+                        install.setDataAndType(
+                            apkUri, "application/vnd.android.package-archive");
+                        install.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        install.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(install);
+
+                        Toast.makeText(this,
+                            "تم التحقق من الملف. أكمل التحديث من مثبت Android.",
+                            Toast.LENGTH_LONG).show();
+
+                    } catch (Throwable error) {
+                        android.util.Log.e("NRS_UPDATER",
+                            "Unable to open Android installer", error);
+                        Toast.makeText(this,
+                            "تعذر فتح مثبت Android: "
+                                + error.getClass().getSimpleName(),
+                            Toast.LENGTH_LONG).show();
+                    } finally {
+                        button.setEnabled(true);
+                        button.setText("فحص التحديث");
+                    }
+                });
+
+            } catch (Throwable error) {
+                android.util.Log.e("NRS_UPDATER",
+                    "Update check failed", error);
+
+                if (downloaded != null && downloaded.getName().endsWith(
+                        ".download")) {
+                    // Delete only this updater's incomplete temporary file.
+                    downloaded.delete();
+                }
+
+                final String message =
+                    error.getMessage() == null
+                    ? error.getClass().getSimpleName()
+                    : error.getMessage();
+
+                runOnUiThread(() -> {
+                    button.setEnabled(true);
+                    button.setText("إعادة فحص التحديث");
+                    Toast.makeText(this,
+                        "لم يكتمل التحديث: " + message,
+                        Toast.LENGTH_LONG).show();
+                });
+            }
+        }, "NRS-Official-Updater").start();
     }
 
     private String nrsGetOrCreateInitialPassword() throws java.io.IOException {

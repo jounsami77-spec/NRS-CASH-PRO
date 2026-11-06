@@ -161,6 +161,28 @@ body.authenticated #dzLogin{display:none!important}
   background: #e9eee9 !important;
   font-weight: bold;
 }
+#dzInventoryPrint .inv-barcode-cell {
+  min-width: 38mm;
+  vertical-align: middle;
+}
+#dzInventoryPrint .inv-barcode-svg svg {
+  display: block;
+  width: 100%;
+  max-width: 42mm;
+  height: 11mm;
+  margin: 0 auto;
+}
+#dzInventoryPrint .inv-barcode-text {
+  direction: ltr;
+  font-family: monospace;
+  font-size: 9px;
+  letter-spacing: .5px;
+  margin-top: 2px;
+}
+#dzInventoryPrint .inv-product-name {
+  font-weight: bold;
+  min-width: 30mm;
+}
 #dzInventoryPrint .inv-summary {
   margin-top: 12px;
   font-size: 12px;
@@ -788,36 +810,99 @@ $('saveSettings').onclick=async()=>{
 // DZVORA_BARCODE_LABELS_V1
 function printProductLabels(p){
  const code=String(p.barcode||'').trim();
- if(!code){alert('هذا المنتج لا يملك باركود. افتح تعديل المنتج وأضف الكود أولاً.');return}
- if(typeof JsBarcode==='undefined'){
-  alert('مكتبة إنشاء الباركود لم تُحمّل. تحقق من اتصال الإنترنت ثم أعد فتح الصفحة.');
+
+ if(!code){
+  alert('هذا المنتج لا يملك باركود. افتح تعديل المنتج وأضف الكود أولاً.');
   return;
  }
+
+ if(typeof window.JsBarcode!=='function'){
+  alert('مكتبة إنشاء الباركود غير متاحة.');
+  return;
+ }
+
+ if(!window.AndroidPrinter ||
+    typeof window.AndroidPrinter.printPage!=='function'){
+  alert('خدمة الطباعة غير متاحة في هذا الجهاز.');
+  return;
+ }
+
+ if(window.__nrsPrintPending){
+  alert('توجد مهمة طباعة قيد التنفيذ. انتظر انتهاءها.');
+  return;
+ }
+
  const raw=prompt('كم ملصقًا تريد طباعته للمنتج: '+p.name+'؟','1');
  if(raw===null)return;
+
  const count=Number(raw);
  if(!Number.isInteger(count)||count<1||count>100){
-  alert('أدخل عددًا صحيحًا من 1 إلى 100.');return;
+  alert('أدخل عدداً صحيحاً من 1 إلى 100.');
+  return;
  }
+
  let area=document.getElementById('barcodePrint');
- if(!area){area=document.createElement('div');area.id='barcodePrint';document.body.appendChild(area)}
- area.replaceChildren();
- for(let i=0;i<count;i++){
-  const label=document.createElement('div');label.className='barcode-label';
-  const name=document.createElement('div');name.className='label-name';name.textContent=p.name||'منتج';
-  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-  const codetxt=document.createElement('div');codetxt.className='label-code';codetxt.textContent=code;
-  const price=document.createElement('div');price.className='label-price';
-  price.textContent=(Number(p.price)||0).toLocaleString('fr-DZ')+' دج';
-  label.append(name,svg,codetxt,price);area.appendChild(label);
-  try{JsBarcode(svg,code,{format:'CODE128',displayValue:false,margin:2,height:45,lineColor:'#000',background:'#fff'});}
-  catch(e){area.replaceChildren();alert('تعذر إنشاء الباركود: '+e.message);return}
+
+ if(!area){
+  area=document.createElement('div');
+  area.id='barcodePrint';
+  document.body.appendChild(area);
  }
- document.body.classList.add('printing-labels');
- const cleanup=()=>{document.body.classList.remove('printing-labels');window.removeEventListener('afterprint',cleanup)};
- window.addEventListener('afterprint',cleanup);
- requestNativePrint();
- setTimeout(()=>document.body.classList.remove('printing-labels'),1500);
+
+ area.replaceChildren();
+
+ try{
+  for(let i=0;i<count;i++){
+   const label=document.createElement('div');
+   label.className='barcode-label';
+
+   const name=document.createElement('div');
+   name.className='label-name';
+   name.textContent=p.name||'منتج';
+
+   const svg=document.createElementNS(
+    'http://www.w3.org/2000/svg','svg'
+   );
+
+   const codetxt=document.createElement('div');
+   codetxt.className='label-code';
+   codetxt.textContent=code;
+
+   const price=document.createElement('div');
+   price.className='label-price';
+   price.textContent=(Number(p.price)||0).toLocaleString('fr-DZ')+' دج';
+
+   label.append(name,svg,codetxt,price);
+   area.appendChild(label);
+
+   window.JsBarcode(svg,code,{
+    format:'CODE128',
+    displayValue:false,
+    margin:2,
+    height:45,
+    lineColor:'#000',
+    background:'#fff'
+   });
+  }
+
+  window.__nrsPrintPending=true;
+  document.body.classList.add('printing-labels');
+
+  requestAnimationFrame(function(){
+   try{
+    window.AndroidPrinter.printPage();
+   }catch(e){
+    window.NRSAndroidPrintFinished(false);
+    alert('تعذرت الطباعة: '+(e.message||e));
+   }
+  });
+
+ }catch(e){
+  area.replaceChildren();
+  document.body.classList.remove('printing-labels');
+  window.__nrsPrintPending=false;
+  alert('تعذر إنشاء ملصق الباركود: '+(e.message||e));
+ }
 }
 
 function unitLabel(unit){
@@ -1596,46 +1681,103 @@ $('dzLoginForm').onsubmit=async e=>{
 
   async function dzPrintInventory() {
     var button = document.getElementById('dzInventoryPrintBtn');
-    if (button) {
-      button.disabled = true;
-      button.textContent = 'جارٍ تجهيز قائمة المخزون...';
+
+    if (window.__nrsPrintPending) {
+      alert('توجد مهمة طباعة قيد التنفيذ. انتظر انتهاءها.');
+      return;
     }
 
     try {
-      var products = await dzFetchProducts();
-      products.sort(function (a, b) {
-        var aa = String(dzGet(a, ['name', 'product_name', 'title']));
-        var bb = String(dzGet(b, ['name', 'product_name', 'title']));
-        return aa.localeCompare(bb, 'ar');
+      if (!window.AndroidPrinter ||
+          typeof window.AndroidPrinter.printPage !== 'function') {
+        throw new Error('خدمة الطباعة غير متاحة في هذا الجهاز.');
+      }
+
+      if (typeof window.JsBarcode !== 'function') {
+        throw new Error('مكتبة الباركود غير متاحة.');
+      }
+
+      if (button) {
+        button.disabled = true;
+        button.textContent = '⏳ تجهيز قائمة المخزون والباركود...';
+      }
+
+      // إنشاء باركود للمنتجات التي لا تملكه فقط.
+      var result = await request(
+        '/api/products/ensure-barcodes',
+        { method: 'POST' }
+      );
+
+      var products = dzPickProducts(result);
+
+      if (!products.length) {
+        throw new Error('لا توجد منتجات في مخزون هذا المتجر.');
+      }
+
+      products.sort(function(a, b) {
+        return String(a.name || '').localeCompare(
+          String(b.name || ''), 'ar'
+        );
       });
 
-      var rows = products.map(function (p, i) {
+      var rows = products.map(function(p, i) {
         var name = dzGet(p, ['name', 'product_name', 'title']) || '—';
         var category = dzGet(p, ['category', 'category_name']) || '—';
-        var barcode = dzGet(p, ['barcode', 'bar_code', 'code']) || '—';
+
+        var barcode = String(
+          dzGet(p, ['barcode', 'bar_code', 'code']) || ''
+        ).trim();
+
         var price = dzGet(p, ['price', 'selling_price', 'sale_price']);
         var stock = dzGet(p, ['stock', 'quantity', 'qty', 'stock_quantity']);
+
+        var barcodeCell = '—';
+
+        if (barcode) {
+          var svg = document.createElementNS(
+            'http://www.w3.org/2000/svg', 'svg'
+          );
+
+          window.JsBarcode(svg, barcode, {
+            format: 'CODE128',
+            displayValue: false,
+            margin: 1,
+            width: 1.15,
+            height: 27,
+            lineColor: '#000',
+            background: '#fff'
+          });
+
+          barcodeCell =
+            '<div class="inv-barcode-svg">' + svg.outerHTML + '</div>' +
+            '<div class="inv-barcode-text">' +
+            dzEscape(barcode) + '</div>';
+        }
+
         return '<tr>' +
           '<td>' + (i + 1) + '</td>' +
-          '<td style="text-align:right">' + dzEscape(name) + '</td>' +
+          '<td class="inv-product-name">' + dzEscape(name) + '</td>' +
           '<td>' + dzEscape(category) + '</td>' +
-          '<td>' + dzEscape(barcode) + '</td>' +
+          '<td class="inv-barcode-cell">' + barcodeCell + '</td>' +
           '<td>' + dzMoney(price) + '</td>' +
           '<td>' + dzEscape(stock === '' ? '—' : stock) + '</td>' +
           '</tr>';
       }).join('');
 
-      var totalUnits = products.reduce(function (sum, p) {
-        var n = Number(dzGet(p, ['stock', 'quantity', 'qty', 'stock_quantity']));
+      var totalUnits = products.reduce(function(sum, p) {
+        var n = Number(
+          dzGet(p, ['stock', 'quantity', 'qty', 'stock_quantity'])
+        );
         return sum + (Number.isFinite(n) ? n : 0);
       }, 0);
 
       var root = dzEnsurePrintArea();
+
       root.innerHTML =
         '<div class="inv-sheet">' +
           '<div class="inv-heading">' +
             '<h1>cash.pro.S.M.G.R 🇩🇿</h1>' +
-            '<div>قائمة المخزون والمنتجات</div>' +
+            '<div>قائمة المخزون والمنتجات والباركود</div>' +
           '</div>' +
           '<div class="inv-meta">تاريخ الطباعة: ' +
             dzEscape(new Date().toLocaleString('ar-DZ')) +
@@ -1649,208 +1791,59 @@ $('dzLoginForm').onsubmit=async e=>{
           '</div>' +
         '</div>';
 
+      window.__nrsPrintPending = true;
       document.body.classList.add('dz-print-inventory');
 
-      var cleanup = function () {
-        document.body.classList.remove('dz-print-inventory');
-        window.removeEventListener('afterprint', cleanup);
-        if (button) {
-          button.disabled = false;
-          button.textContent = '🖨️ طباعة قائمة المخزون A4';
-        }
-      };
-
-      window.addEventListener('afterprint', cleanup, { once: true });
-
-      // تأخير بسيط للسماح للمتصفح بتجهيز الجدول قبل فتح الطباعة
-      setTimeout(function () {
+      requestAnimationFrame(function() {
         try {
-          requestNativePrint();
-        } finally {
-          // لا نحذف وضع الطباعة هنا؛ المتصفح ينهيه عند afterprint.
+          window.AndroidPrinter.printPage();
+        } catch (e) {
+          window.NRSAndroidPrintFinished(false);
+          alert('تعذرت طباعة قائمة المخزون: ' + (e.message || e));
         }
-      }, 300);
+      });
 
     } catch (error) {
       document.body.classList.remove('dz-print-inventory');
-      alert('تعذر تجهيز قائمة المخزون: ' + (error.message || error));
+
       if (button) {
         button.disabled = false;
         button.textContent = '🖨️ طباعة قائمة المخزون A4';
       }
+
+      alert('تعذر تجهيز قائمة المخزون: ' + (error.message || error));
     }
   }
 
+  // دورة موحدة لإنهاء الطباعة الفردية وطباعة المخزون.
+  window.__nrsPrintPending = window.__nrsPrintPending || false;
 
-// NRS_BARCODE_PRINT_LIFECYCLE_V1
-window.__nrsBarcodePrintPending =
-  window.__nrsBarcodePrintPending || false;
+  window.NRSAndroidPrintFinished = function(success) {
+    if (!window.__nrsPrintPending) return;
 
-window.NRSAndroidPrintFinished = function(success) {
-  if (!window.__nrsBarcodePrintPending) return;
+    window.__nrsPrintPending = false;
 
-  window.__nrsBarcodePrintPending = false;
-
-  document.body.classList.remove('printing-labels');
-
-  var current = document.getElementById('barcodePrint');
-  if (current) current.remove();
-
-  var button = document.getElementById('dzInventoryBarcodePrintBtn');
-  if (button) {
-    button.disabled = false;
-    button.textContent = '🏷️ طباعة باركود المخزون';
-  }
-
-  if (!success) {
-    console.warn('NRS barcode print job did not complete successfully.');
-  }
-};
-
-// NRS_BULK_BARCODE_LABELS_V1
-async function dzPrintBarcodeLabels() {
-  var button = document.getElementById('dzInventoryBarcodePrintBtn');
-
-  if (window.__nrsBarcodePrintPending) {
-    alert('توجد مهمة طباعة ملصقات قيد التنفيذ. انتظر انتهاءها أولاً.');
-    return;
-  }
-
-  try {
-    if (button) {
-      button.disabled = true;
-      button.textContent = '⏳ تجهيز الباركود...';
-    }
-
-    if (!window.AndroidPrinter ||
-        typeof window.AndroidPrinter.printPage !== 'function') {
-      throw new Error('خدمة الطباعة غير متاحة في هذا الجهاز.');
-    }
-
-    if (typeof window.JsBarcode !== 'function') {
-      throw new Error('مكتبة الباركود غير متاحة.');
-    }
-
-    var result = await request(
-      '/api/products/ensure-barcodes',
-      { method: 'POST' }
+    document.body.classList.remove(
+      'printing-labels',
+      'dz-print-inventory'
     );
 
-    var products = dzPickProducts(result);
+    var labels = document.getElementById('barcodePrint');
+    if (labels) labels.remove();
 
-    if (!Array.isArray(products) || products.length === 0) {
-      alert('لا توجد منتجات في مخزون هذا المتجر.');
-      return;
+    var inventoryButton =
+      document.getElementById('dzInventoryPrintBtn');
+
+    if (inventoryButton) {
+      inventoryButton.disabled = false;
+      inventoryButton.textContent = '🖨️ طباعة قائمة المخزون A4';
     }
 
-    var oldRoot = document.getElementById('barcodePrint');
-    if (oldRoot) oldRoot.remove();
-
-    var root = document.createElement('div');
-    root.id = 'barcodePrint';
-
-    root.style.cssText =
-      'display:grid;' +
-      'grid-template-columns:repeat(2,minmax(0,1fr));' +
-      'gap:5mm;padding:4mm;background:#fff;color:#000;' +
-      'box-sizing:border-box;';
-
-    var validCount = 0;
-
-    products.forEach(function(product) {
-      var barcode = String(product.barcode || '').trim();
-      if (!barcode) return;
-
-      var label = document.createElement('div');
-
-      label.style.cssText =
-        'border:1px solid #222;padding:3mm;min-height:35mm;' +
-        'box-sizing:border-box;display:flex;flex-direction:column;' +
-        'align-items:center;justify-content:center;text-align:center;' +
-        'background:#fff;color:#000;break-inside:avoid;' +
-        'page-break-inside:avoid;overflow:hidden;';
-
-      var name = document.createElement('div');
-      name.textContent = String(product.name || 'منتج');
-      name.style.cssText =
-        'font-weight:bold;font-size:12px;margin-bottom:2mm;' +
-        'max-width:100%;overflow-wrap:anywhere;';
-
-      var svg = document.createElementNS(
-        'http://www.w3.org/2000/svg',
-        'svg'
-      );
-
-      svg.style.maxWidth = '100%';
-      svg.style.height = 'auto';
-
-      var codeText = document.createElement('div');
-      codeText.textContent = barcode;
-      codeText.style.cssText =
-        'font-size:11px;letter-spacing:1px;margin-top:1mm;';
-
-      var price = document.createElement('div');
-      var amount = Number(product.price || 0);
-
-      price.textContent =
-        (Number.isFinite(amount) ?
-          amount.toLocaleString('fr-DZ') : '0') + ' دج';
-
-      price.style.cssText =
-        'font-weight:bold;font-size:12px;margin-top:1mm;';
-
-      label.appendChild(name);
-      label.appendChild(svg);
-      label.appendChild(codeText);
-      label.appendChild(price);
-      root.appendChild(label);
-
-      window.JsBarcode(svg, barcode, {
-        format: 'CODE128',
-        displayValue: false,
-        lineColor: '#000000',
-        background: '#ffffff',
-        width: 1.6,
-        height: 42,
-        margin: 2
-      });
-
-      validCount++;
-    });
-
-    if (validCount === 0) {
-      root.remove();
-      alert('لا توجد منتجات تحمل باركوداً صالحاً.');
-      return;
+    if (!success) {
+      console.warn('NRS Android print job did not complete successfully.');
     }
+  };
 
-    document.body.appendChild(root);
-
-    // لا تحذف DOM قبل انتهاء مهمة Android الفعلية.
-    window.__nrsBarcodePrintPending = true;
-    document.body.classList.add('printing-labels');
-
-    window.requestAnimationFrame(function() {
-      try {
-        window.AndroidPrinter.printPage();
-      } catch (e) {
-        window.NRSAndroidPrintFinished(false);
-        alert('تعذرت الطباعة: ' + (e.message || e));
-      }
-    });
-
-  } catch (error) {
-    alert(
-      'تعذرت طباعة الملصقات: ' +
-      (error.message || error)
-    );
-  } finally {
-    if (button && !window.__nrsBarcodePrintPending) {
-      button.disabled = false;
-      button.textContent = '🏷️ طباعة باركود المخزون';
-    }
-  }
-}
 
   function dzInstallInventoryButton() {
     var page = document.getElementById('page-products');
@@ -1860,7 +1853,6 @@ async function dzPrintBarcodeLabels() {
     var inventoryButton =
       document.getElementById('dzInventoryPrintBtn');
 
-    // زر A4 الأصلي ووظيفته كما هما.
     if (!inventoryButton) {
       inventoryButton = document.createElement('button');
       inventoryButton.id = 'dzInventoryPrintBtn';
@@ -1872,23 +1864,6 @@ async function dzPrintBarcodeLabels() {
         catalog.parentNode.insertBefore(inventoryButton, catalog);
       } else {
         page.insertBefore(inventoryButton, page.firstChild);
-      }
-    }
-
-    // زر ملصقات الباركود.
-    if (!document.getElementById('dzInventoryBarcodePrintBtn')) {
-      var labelButton = document.createElement('button');
-      labelButton.id = 'dzInventoryBarcodePrintBtn';
-      labelButton.type = 'button';
-      labelButton.textContent = '🏷️ طباعة باركود المخزون';
-      labelButton.addEventListener('click', dzPrintBarcodeLabels);
-
-      if (inventoryButton.parentNode) {
-        inventoryButton.insertAdjacentElement('afterend', labelButton);
-      } else if (catalog && catalog.parentNode) {
-        catalog.parentNode.insertBefore(labelButton, catalog);
-      } else {
-        page.insertBefore(labelButton, page.firstChild);
       }
     }
   }

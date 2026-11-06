@@ -1,0 +1,129 @@
+name: Verify NRS Owner Release 1.2.2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate release secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK_ROOT"
+
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+          fi
+
+          test -x "$SDKMANAGER"
+
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Prepare embedded Node.js runtime
+        run: bash scripts/prepare-node-mobile-runtime.sh
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Restore permanent signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+
+          test -n "$ANDROID_KEYSTORE_BASE64"
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" |
+            base64 --decode > android/app/release-key.jks
+
+          test -s android/app/release-key.jks
+          chmod 600 android/app/release-key.jks
+
+          keytool -list \
+            -keystore android/app/release-key.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Compile and build signed Owner APK
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -p android :app:assembleOwnerRelease
+
+      - name: Validate APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/owner/release/app-owner-release.apk"
+          OUT="cash.pro.S.M.G.R-1.2.2.apk"
+
+          test -s "$APK"
+
+          unzip -t "$APK"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" \
+            verify --verbose --print-certs "$APK"
+
+          BADGING="$("$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK")"
+
+          echo "$BADGING" |
+            grep -F "package: name='dz.nrs.cashpro' versionCode='14' versionName='1.2.2'"
+
+          cp "$APK" "$OUT"
+
+          echo "===== APK SHA256 ====="
+          sha256sum "$OUT"
+
+      - name: Upload APK build artifact (no release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cash-pro-owner-1.2.2-signed-apk
+          path: cash.pro.S.M.G.R-1.2.2.apk
+          if-no-files-found: error
+          retention-days: 14
