@@ -9,6 +9,8 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.webkit.PermissionRequest;
 import android.webkit.WebView;
 import android.webkit.JavascriptInterface;
@@ -105,6 +107,24 @@ storeHomeButton.setOnClickListener(v ->
 
         // NRS_NATIVE_PRINT_BRIDGE_V3
         web.addJavascriptInterface(new Object() {
+
+            // NRS_PRINT_JOB_MONITOR_V1
+            private void notifyPagePrintFinished(boolean success) {
+                try {
+                    web.evaluateJavascript(
+                        "if(window.NRSAndroidPrintFinished){" +
+                        "window.NRSAndroidPrintFinished(" +
+                        (success ? "true" : "false") +
+                        ");}",
+                        null
+                    );
+                } catch (Throwable error) {
+                    android.util.Log.e("NRS_PRINT",
+                        "Unable to notify WebView about print completion",
+                        error);
+                }
+            }
+
             @JavascriptInterface
             public void printPage() {
                 runOnUiThread(() -> {
@@ -118,6 +138,7 @@ storeHomeButton.setOnClickListener(v ->
                             Toast.makeText(MainActivity.this,
                                 "تعذرت الطباعة: عنوان التطبيق المحلي غير صحيح",
                                 Toast.LENGTH_LONG).show();
+                            notifyPagePrintFinished(false);
                             return;
                         }
 
@@ -136,6 +157,7 @@ storeHomeButton.setOnClickListener(v ->
                                     Toast.makeText(MainActivity.this,
                                         "خدمة الطباعة غير متاحة على الهاتف",
                                         Toast.LENGTH_LONG).show();
+                                    notifyPagePrintFinished(false);
                                     return;
                                 }
 
@@ -148,8 +170,9 @@ storeHomeButton.setOnClickListener(v ->
                                     android.util.Log.e("NRS_PRINT",
                                         "WebView print adapter is null");
                                     Toast.makeText(MainActivity.this,
-                                        "تعذر إنشاء مستند الفاتورة",
+                                        "تعذر إنشاء مستند الطباعة",
                                         Toast.LENGTH_LONG).show();
+                                    notifyPagePrintFinished(false);
                                     return;
                                 }
 
@@ -171,14 +194,64 @@ storeHomeButton.setOnClickListener(v ->
                                     Toast.makeText(MainActivity.this,
                                         "لم ينشئ Android مهمة الطباعة",
                                         Toast.LENGTH_LONG).show();
+                                    notifyPagePrintFinished(false);
                                     return;
                                 }
 
                                 android.util.Log.i("NRS_PRINT",
                                     "Print job created: " + job.getId());
 
+                                // NRS_PRINT_JOB_MONITOR_V1
+                                final android.print.PrintJob monitoredJob = job;
+                                final Handler printHandler =
+                                    new Handler(Looper.getMainLooper());
+
+                                final Runnable[] printMonitor =
+                                    new Runnable[1];
+
+                                printMonitor[0] = new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        try {
+                                            if (monitoredJob.isCompleted()) {
+                                                android.util.Log.i("NRS_PRINT",
+                                                    "Print job completed: " +
+                                                    monitoredJob.getId());
+                                                notifyPagePrintFinished(true);
+                                                return;
+                                            }
+
+                                            if (monitoredJob.isCancelled()) {
+                                                android.util.Log.i("NRS_PRINT",
+                                                    "Print job cancelled: " +
+                                                    monitoredJob.getId());
+                                                notifyPagePrintFinished(false);
+                                                return;
+                                            }
+
+                                            if (monitoredJob.isFailed()) {
+                                                android.util.Log.e("NRS_PRINT",
+                                                    "Print job failed: " +
+                                                    monitoredJob.getId());
+                                                notifyPagePrintFinished(false);
+                                                return;
+                                            }
+
+                                            printHandler.postDelayed(this, 500);
+
+                                        } catch (Throwable monitorError) {
+                                            android.util.Log.e("NRS_PRINT",
+                                                "Print job monitoring failed",
+                                                monitorError);
+                                            notifyPagePrintFinished(false);
+                                        }
+                                    }
+                                };
+
+                                printHandler.postDelayed(printMonitor[0], 500);
+
                                 Toast.makeText(MainActivity.this,
-                                    "أنشأ Android مهمة الطباعة. إذا لم تظهر المعاينة، افحص خدمة الطباعة بالنظام.",
+                                    "أنشأ Android مهمة الطباعة. ستبقى الملصقات جاهزة حتى انتهاء المهمة.",
                                     Toast.LENGTH_LONG).show();
 
                             } catch (Throwable e) {
@@ -191,6 +264,7 @@ storeHomeButton.setOnClickListener(v ->
                                 Toast.makeText(MainActivity.this,
                                     "فشل PrintManager: " + detail,
                                     Toast.LENGTH_LONG).show();
+                                notifyPagePrintFinished(false);
                             }
                         }, 1000);
 
@@ -201,6 +275,7 @@ storeHomeButton.setOnClickListener(v ->
                             "فشل جسر الطباعة: " +
                                 e.getClass().getSimpleName(),
                             Toast.LENGTH_LONG).show();
+                        notifyPagePrintFinished(false);
                     }
                 });
             }

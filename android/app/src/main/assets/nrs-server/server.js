@@ -580,7 +580,93 @@ async function api(req,res,url) {
   return send(res,200,{ok:true,storeId:store.id,name:store.name,businessType:store.business_type||'grocery'});
  }
 
- if (p==='/api/products' && req.method==='GET') {
+
+// NRS_BULK_ENSURE_PRODUCT_BARCODES_V1
+if (p==='/api/products/ensure-barcodes' && req.method==='POST') {
+  let transactionOpen = false;
+
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    transactionOpen = true;
+
+    const missing = db.prepare(`
+      SELECT id
+      FROM products
+      WHERE store_id=?
+        AND (barcode IS NULL OR trim(barcode)='')
+      ORDER BY id
+    `).all(storeId);
+
+    let nextId = Number(
+      db.prepare(
+        'SELECT COALESCE(MAX(id),0)+1 AS n FROM products'
+      ).get().n
+    );
+
+    const exists = db.prepare(
+      'SELECT 1 FROM products WHERE store_id=? AND barcode=? LIMIT 1'
+    );
+
+    const update = db.prepare(`
+      UPDATE products
+      SET barcode=?
+      WHERE id=?
+        AND store_id=?
+        AND (barcode IS NULL OR trim(barcode)='')
+    `);
+
+    for (const product of missing) {
+      let barcode;
+
+      do {
+        barcode =
+          'DZ' +
+          String(storeId).padStart(3,'0') +
+          String(nextId).padStart(8,'0');
+        nextId++;
+      } while (exists.get(storeId, barcode));
+
+      const result = update.run(
+        barcode,
+        product.id,
+        storeId
+      );
+
+      if (result.changes !== 1) {
+        throw new Error(
+          'تعذر حفظ باركود المنتج رقم ' + product.id
+        );
+      }
+    }
+
+    const rows = db.prepare(`
+      SELECT *
+      FROM products
+      WHERE store_id=?
+      ORDER BY name
+    `).all(storeId);
+
+    db.exec('COMMIT');
+    transactionOpen = false;
+
+    return send(res, 200, {
+      ok: true,
+      updatedCount: missing.length,
+      products: rows
+    });
+
+  } catch (e) {
+    if (transactionOpen) {
+      try { db.exec('ROLLBACK'); } catch (_) {}
+    }
+
+    return send(res, 500, {
+      error: e.message || 'تعذر إنشاء باركودات المنتجات'
+    });
+  }
+}
+
+if (p==='/api/products' && req.method==='GET') {
   const q=(url.searchParams.get('q')||'').trim();
   const rows=q ? db.prepare(`SELECT * FROM products WHERE store_id=? AND
    (name LIKE ? OR barcode LIKE ? OR category LIKE ?) ORDER BY name LIMIT 100`)

@@ -1681,23 +1681,215 @@ $('dzLoginForm').onsubmit=async e=>{
     }
   }
 
-  function dzInstallInventoryButton() {
-    if (document.getElementById('dzInventoryPrintBtn')) return;
 
+// NRS_BARCODE_PRINT_LIFECYCLE_V1
+window.__nrsBarcodePrintPending =
+  window.__nrsBarcodePrintPending || false;
+
+window.NRSAndroidPrintFinished = function(success) {
+  if (!window.__nrsBarcodePrintPending) return;
+
+  window.__nrsBarcodePrintPending = false;
+
+  document.body.classList.remove('printing-labels');
+
+  var current = document.getElementById('barcodePrint');
+  if (current) current.remove();
+
+  var button = document.getElementById('dzInventoryBarcodePrintBtn');
+  if (button) {
+    button.disabled = false;
+    button.textContent = '🏷️ طباعة باركود المخزون';
+  }
+
+  if (!success) {
+    console.warn('NRS barcode print job did not complete successfully.');
+  }
+};
+
+// NRS_BULK_BARCODE_LABELS_V1
+async function dzPrintBarcodeLabels() {
+  var button = document.getElementById('dzInventoryBarcodePrintBtn');
+
+  if (window.__nrsBarcodePrintPending) {
+    alert('توجد مهمة طباعة ملصقات قيد التنفيذ. انتظر انتهاءها أولاً.');
+    return;
+  }
+
+  try {
+    if (button) {
+      button.disabled = true;
+      button.textContent = '⏳ تجهيز الباركود...';
+    }
+
+    if (!window.AndroidPrinter ||
+        typeof window.AndroidPrinter.printPage !== 'function') {
+      throw new Error('خدمة الطباعة غير متاحة في هذا الجهاز.');
+    }
+
+    if (typeof window.JsBarcode !== 'function') {
+      throw new Error('مكتبة الباركود غير متاحة.');
+    }
+
+    var result = await request(
+      '/api/products/ensure-barcodes',
+      { method: 'POST' }
+    );
+
+    var products = dzPickProducts(result);
+
+    if (!Array.isArray(products) || products.length === 0) {
+      alert('لا توجد منتجات في مخزون هذا المتجر.');
+      return;
+    }
+
+    var oldRoot = document.getElementById('barcodePrint');
+    if (oldRoot) oldRoot.remove();
+
+    var root = document.createElement('div');
+    root.id = 'barcodePrint';
+
+    root.style.cssText =
+      'display:grid;' +
+      'grid-template-columns:repeat(2,minmax(0,1fr));' +
+      'gap:5mm;padding:4mm;background:#fff;color:#000;' +
+      'box-sizing:border-box;';
+
+    var validCount = 0;
+
+    products.forEach(function(product) {
+      var barcode = String(product.barcode || '').trim();
+      if (!barcode) return;
+
+      var label = document.createElement('div');
+
+      label.style.cssText =
+        'border:1px solid #222;padding:3mm;min-height:35mm;' +
+        'box-sizing:border-box;display:flex;flex-direction:column;' +
+        'align-items:center;justify-content:center;text-align:center;' +
+        'background:#fff;color:#000;break-inside:avoid;' +
+        'page-break-inside:avoid;overflow:hidden;';
+
+      var name = document.createElement('div');
+      name.textContent = String(product.name || 'منتج');
+      name.style.cssText =
+        'font-weight:bold;font-size:12px;margin-bottom:2mm;' +
+        'max-width:100%;overflow-wrap:anywhere;';
+
+      var svg = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'svg'
+      );
+
+      svg.style.maxWidth = '100%';
+      svg.style.height = 'auto';
+
+      var codeText = document.createElement('div');
+      codeText.textContent = barcode;
+      codeText.style.cssText =
+        'font-size:11px;letter-spacing:1px;margin-top:1mm;';
+
+      var price = document.createElement('div');
+      var amount = Number(product.price || 0);
+
+      price.textContent =
+        (Number.isFinite(amount) ?
+          amount.toLocaleString('fr-DZ') : '0') + ' دج';
+
+      price.style.cssText =
+        'font-weight:bold;font-size:12px;margin-top:1mm;';
+
+      label.appendChild(name);
+      label.appendChild(svg);
+      label.appendChild(codeText);
+      label.appendChild(price);
+      root.appendChild(label);
+
+      window.JsBarcode(svg, barcode, {
+        format: 'CODE128',
+        displayValue: false,
+        lineColor: '#000000',
+        background: '#ffffff',
+        width: 1.6,
+        height: 42,
+        margin: 2
+      });
+
+      validCount++;
+    });
+
+    if (validCount === 0) {
+      root.remove();
+      alert('لا توجد منتجات تحمل باركوداً صالحاً.');
+      return;
+    }
+
+    document.body.appendChild(root);
+
+    // لا تحذف DOM قبل انتهاء مهمة Android الفعلية.
+    window.__nrsBarcodePrintPending = true;
+    document.body.classList.add('printing-labels');
+
+    window.requestAnimationFrame(function() {
+      try {
+        window.AndroidPrinter.printPage();
+      } catch (e) {
+        window.NRSAndroidPrintFinished(false);
+        alert('تعذرت الطباعة: ' + (e.message || e));
+      }
+    });
+
+  } catch (error) {
+    alert(
+      'تعذرت طباعة الملصقات: ' +
+      (error.message || error)
+    );
+  } finally {
+    if (button && !window.__nrsBarcodePrintPending) {
+      button.disabled = false;
+      button.textContent = '🏷️ طباعة باركود المخزون';
+    }
+  }
+}
+
+  function dzInstallInventoryButton() {
     var page = document.getElementById('page-products');
     if (!page) return;
 
-    var button = document.createElement('button');
-    button.id = 'dzInventoryPrintBtn';
-    button.type = 'button';
-    button.textContent = '🖨️ طباعة قائمة المخزون A4';
-    button.addEventListener('click', dzPrintInventory);
-
     var catalog = document.getElementById('catalog');
-    if (catalog && catalog.parentNode) {
-      catalog.parentNode.insertBefore(button, catalog);
-    } else {
-      page.insertBefore(button, page.firstChild);
+    var inventoryButton =
+      document.getElementById('dzInventoryPrintBtn');
+
+    // زر A4 الأصلي ووظيفته كما هما.
+    if (!inventoryButton) {
+      inventoryButton = document.createElement('button');
+      inventoryButton.id = 'dzInventoryPrintBtn';
+      inventoryButton.type = 'button';
+      inventoryButton.textContent = '🖨️ طباعة قائمة المخزون A4';
+      inventoryButton.addEventListener('click', dzPrintInventory);
+
+      if (catalog && catalog.parentNode) {
+        catalog.parentNode.insertBefore(inventoryButton, catalog);
+      } else {
+        page.insertBefore(inventoryButton, page.firstChild);
+      }
+    }
+
+    // زر ملصقات الباركود.
+    if (!document.getElementById('dzInventoryBarcodePrintBtn')) {
+      var labelButton = document.createElement('button');
+      labelButton.id = 'dzInventoryBarcodePrintBtn';
+      labelButton.type = 'button';
+      labelButton.textContent = '🏷️ طباعة باركود المخزون';
+      labelButton.addEventListener('click', dzPrintBarcodeLabels);
+
+      if (inventoryButton.parentNode) {
+        inventoryButton.insertAdjacentElement('afterend', labelButton);
+      } else if (catalog && catalog.parentNode) {
+        catalog.parentNode.insertBefore(labelButton, catalog);
+      } else {
+        page.insertBefore(labelButton, page.firstChild);
+      }
     }
   }
 
