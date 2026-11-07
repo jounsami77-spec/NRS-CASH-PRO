@@ -43,6 +43,75 @@ public class MainActivity extends Activity {
     public void onCreate(Bundle state) {
         super.onCreate(state);
 
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setLayoutDirection(android.view.View.LAYOUT_DIRECTION_RTL);
+        layout.setBackgroundColor(Color.rgb(246, 248, 250));
+        layout.setPadding(20, 24, 20, 20);
+
+        TextView header = new TextView(this);
+        header.setText("cash.pro.S.M.G.R");
+        header.setTextSize(23);
+        header.setTypeface(null, android.graphics.Typeface.BOLD);
+        header.setTextColor(Color.WHITE);
+        header.setGravity(Gravity.CENTER);
+        header.setPadding(16, 22, 16, 22);
+        header.setBackgroundColor(Color.rgb(16, 88, 62));
+        layout.addView(header, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView subtitle = new TextView(this);
+        subtitle.setText("نظام إدارة المبيعات والمخزون");
+        subtitle.setTextSize(16);
+        subtitle.setTextColor(Color.rgb(55, 65, 81));
+        subtitle.setGravity(Gravity.CENTER);
+        subtitle.setPadding(8, 18, 8, 18);
+        layout.addView(subtitle);
+
+        Button updateButton = new Button(this);
+        updateButton.setText("فحص التحديثات");
+        updateButton.setAllCaps(false);
+        updateButton.setOnClickListener(
+            v -> nrsCheckForUpdate(updateButton)
+        );
+        layout.addView(updateButton, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        TextView status = new TextView(this);
+        status.setText("جارٍ تجهيز التطبيق وتشغيل الخادم المحلي...");
+        status.setTextSize(16);
+        status.setTextColor(Color.rgb(31, 41, 55));
+        status.setGravity(Gravity.CENTER);
+        status.setPadding(12, 28, 12, 28);
+        layout.addView(status, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+
+        Button retry = new Button(this);
+        retry.setText("إعادة تشغيل الخادم");
+        retry.setAllCaps(false);
+        retry.setEnabled(false);
+        layout.addView(retry, new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ));
+        retry.setOnClickListener(v -> nrsStartNativeServer(status, retry));
+
+        TextView footer = new TextView(this);
+        footer.setText("إصدار Android Native • NRS");
+        footer.setTextSize(12);
+        footer.setTextColor(Color.GRAY);
+        footer.setGravity(Gravity.CENTER);
+        footer.setPadding(8, 24, 8, 8);
+        layout.addView(footer);
+
+        setContentView(layout);
+
         try {
             if (!nrsNativeLoaded) {
                 System.loadLibrary("c++_shared");
@@ -53,375 +122,18 @@ public class MainActivity extends Activity {
         } catch (Throwable error) {
             android.util.Log.e("NRS_STARTUP",
                 "Native library loading failed", error);
-
-            TextView failure = new TextView(this);
-            failure.setText(
-                "تعذر تشغيل محرك التطبيق.\\n\\n" +
-                "نوع الخطأ: " + error.getClass().getSimpleName() +
-                "\\nالتفاصيل: " + String.valueOf(error.getMessage()) +
-                "\\n\\nأرسل هذه الرسالة للدعم الفني."
+            status.setText(
+                "تعذر تحميل محرك التطبيق.\n" +
+                error.getClass().getSimpleName() + ": " +
+                String.valueOf(error.getMessage())
             );
-            failure.setTextSize(16);
-            failure.setTextColor(Color.RED);
-            failure.setPadding(24, 32, 24, 32);
-            failure.setTextIsSelectable(true);
-            setContentView(failure);
+            retry.setEnabled(false);
             return;
         }
 
-        LinearLayout layout = new LinearLayout(this);
-        layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setBackgroundColor(Color.WHITE);
-
-        TextView status = new TextView(this);
-        status.setText("cash.pro.S.M.G.R • Android");
-        status.setTextSize(16);
-        status.setTextColor(Color.WHITE);
-        status.setBackgroundColor(Color.rgb(16, 88, 62));
-        status.setPadding(16, 14, 16, 14);
-        status.setGravity(Gravity.CENTER_VERTICAL);
-        layout.addView(status);
-
-// NRS_GITHUB_UPDATE_BUTTON_V1
-Button updateButton = new Button(this);
-updateButton.setText("فحص التحديث");
-updateButton.setAllCaps(false);
-updateButton.setTextSize(14);
-updateButton.setTextColor(Color.WHITE);
-updateButton.setBackgroundTintList(
-    android.content.res.ColorStateList.valueOf(Color.rgb(31, 93, 145))
-);
-layout.addView(updateButton, new LinearLayout.LayoutParams(
-    LinearLayout.LayoutParams.MATCH_PARENT,
-    LinearLayout.LayoutParams.WRAP_CONTENT
-));
-updateButton.setOnClickListener(v -> nrsCheckForUpdate(updateButton));
-
-// NRS_NATIVE_STORE_RETURN_BUTTON_V1
-Button storeHomeButton = new Button(this);
-storeHomeButton.setVisibility(android.view.View.GONE);
-storeHomeButton.setText("← العودة إلى واجهة المتاجر");
-storeHomeButton.setAllCaps(false);
-storeHomeButton.setTextSize(15);
-storeHomeButton.setTextColor(Color.WHITE);
-storeHomeButton.setBackgroundTintList(
-    android.content.res.ColorStateList.valueOf(Color.rgb(16, 108, 67))
-);
-layout.addView(storeHomeButton, new LinearLayout.LayoutParams(
-    LinearLayout.LayoutParams.MATCH_PARENT,
-    LinearLayout.LayoutParams.WRAP_CONTENT
-));
-
-        WebView web = new WebView(this);
-
-        // NRS_WEBVIEW_HARDWARE_RENDERING_V1
-        // استخدام تسريع Android العتادي لتحسين WebView والكاميرا.
-        web.setLayerType(android.view.View.LAYER_TYPE_HARDWARE, null);
-        android.util.Log.i("NRS_STARTUP",
-            "WebView hardware rendering enabled");
-
-storeHomeButton.setOnClickListener(v ->
-    web.loadUrl("http://127.0.0.1:3001/index.html")
-);
-
-        // NRS_NATIVE_PRINT_BRIDGE_V3
-        web.addJavascriptInterface(new Object() {
-
-            // NRS_PRINT_JOB_MONITOR_V1
-            private void notifyPagePrintFinished(boolean success) {
-                try {
-                    web.evaluateJavascript(
-                        "if(window.NRSAndroidPrintFinished){" +
-                        "window.NRSAndroidPrintFinished(" +
-                        (success ? "true" : "false") +
-                        ");}",
-                        null
-                    );
-                } catch (Throwable error) {
-                    android.util.Log.e("NRS_PRINT",
-                        "Unable to notify WebView about print completion",
-                        error);
-                }
-            }
-
-            @JavascriptInterface
-            public void printPage() {
-                runOnUiThread(() -> {
-                    try {
-                        Uri current = Uri.parse(
-                            web.getUrl() == null ? "" : web.getUrl()
-                        );
-
-                        if (!"127.0.0.1".equals(current.getHost()) ||
-                            current.getPort() != 3001) {
-                            Toast.makeText(MainActivity.this,
-                                "تعذرت الطباعة: عنوان التطبيق المحلي غير صحيح",
-                                Toast.LENGTH_LONG).show();
-                            notifyPagePrintFinished(false);
-                            return;
-                        }
-
-                        Toast.makeText(MainActivity.this,
-                            "وصل طلب الطباعة؛ جارٍ الاتصال بخدمة Android...",
-                            Toast.LENGTH_SHORT).show();
-
-                        web.postDelayed(() -> {
-                            try {
-                                PrintManager manager = (PrintManager)
-                                    getSystemService(Context.PRINT_SERVICE);
-
-                                if (manager == null) {
-                                    android.util.Log.e("NRS_PRINT",
-                                        "PrintManager service is null");
-                                    Toast.makeText(MainActivity.this,
-                                        "خدمة الطباعة غير متاحة على الهاتف",
-                                        Toast.LENGTH_LONG).show();
-                                    notifyPagePrintFinished(false);
-                                    return;
-                                }
-
-                                PrintDocumentAdapter adapter =
-                                    web.createPrintDocumentAdapter(
-                                        "cash-pro-S-M-G-R-Receipt"
-                                    );
-
-                                if (adapter == null) {
-                                    android.util.Log.e("NRS_PRINT",
-                                        "WebView print adapter is null");
-                                    Toast.makeText(MainActivity.this,
-                                        "تعذر إنشاء مستند الطباعة",
-                                        Toast.LENGTH_LONG).show();
-                                    notifyPagePrintFinished(false);
-                                    return;
-                                }
-
-                                PrintAttributes attributes =
-                                    new PrintAttributes.Builder()
-                                        .setMediaSize(
-                                            PrintAttributes.MediaSize.ISO_A4)
-                                        .build();
-
-                                android.print.PrintJob job = manager.print(
-                                    "cash.pro.S.M.G.R - Invoice",
-                                    adapter,
-                                    attributes
-                                );
-
-                                if (job == null) {
-                                    android.util.Log.e("NRS_PRINT",
-                                        "PrintManager.print returned null");
-                                    Toast.makeText(MainActivity.this,
-                                        "لم ينشئ Android مهمة الطباعة",
-                                        Toast.LENGTH_LONG).show();
-                                    notifyPagePrintFinished(false);
-                                    return;
-                                }
-
-                                android.util.Log.i("NRS_PRINT",
-                                    "Print job created: " + job.getId());
-
-                                // NRS_PRINT_JOB_MONITOR_V1
-                                final android.print.PrintJob monitoredJob = job;
-                                final Handler printHandler =
-                                    new Handler(Looper.getMainLooper());
-
-                                final Runnable[] printMonitor =
-                                    new Runnable[1];
-
-                                printMonitor[0] = new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        try {
-                                            if (monitoredJob.isCompleted()) {
-                                                android.util.Log.i("NRS_PRINT",
-                                                    "Print job completed: " +
-                                                    monitoredJob.getId());
-                                                notifyPagePrintFinished(true);
-                                                return;
-                                            }
-
-                                            if (monitoredJob.isCancelled()) {
-                                                android.util.Log.i("NRS_PRINT",
-                                                    "Print job cancelled: " +
-                                                    monitoredJob.getId());
-                                                notifyPagePrintFinished(false);
-                                                return;
-                                            }
-
-                                            if (monitoredJob.isFailed()) {
-                                                android.util.Log.e("NRS_PRINT",
-                                                    "Print job failed: " +
-                                                    monitoredJob.getId());
-                                                notifyPagePrintFinished(false);
-                                                return;
-                                            }
-
-                                            printHandler.postDelayed(this, 500);
-
-                                        } catch (Throwable monitorError) {
-                                            android.util.Log.e("NRS_PRINT",
-                                                "Print job monitoring failed",
-                                                monitorError);
-                                            notifyPagePrintFinished(false);
-                                        }
-                                    }
-                                };
-
-                                printHandler.postDelayed(printMonitor[0], 500);
-
-                                Toast.makeText(MainActivity.this,
-                                    "أنشأ Android مهمة الطباعة. ستبقى الملصقات جاهزة حتى انتهاء المهمة.",
-                                    Toast.LENGTH_LONG).show();
-
-                            } catch (Throwable e) {
-                                android.util.Log.e("NRS_PRINT",
-                                    "PrintManager.print failed", e);
-                                String detail = e.getMessage();
-                                if (detail == null || detail.trim().isEmpty()) {
-                                    detail = e.getClass().getSimpleName();
-                                }
-                                Toast.makeText(MainActivity.this,
-                                    "فشل PrintManager: " + detail,
-                                    Toast.LENGTH_LONG).show();
-                                notifyPagePrintFinished(false);
-                            }
-                        }, 1000);
-
-                    } catch (Throwable e) {
-                        android.util.Log.e("NRS_PRINT",
-                            "Print bridge failed", e);
-                        Toast.makeText(MainActivity.this,
-                            "فشل جسر الطباعة: " +
-                                e.getClass().getSimpleName(),
-                            Toast.LENGTH_LONG).show();
-                        notifyPagePrintFinished(false);
-                    }
-                });
-            }
-        }, "AndroidPrinter");
-
-        // NRS_PRINT_NO_CACHE_V1
-        web.clearCache(true);
-        WebSettings settings = web.getSettings();
-        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        settings.setJavaScriptEnabled(true);
-        settings.setDomStorageEnabled(true);
-        web.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean onRenderProcessGone(
-                    WebView view,
-                    android.webkit.RenderProcessGoneDetail detail) {
-                android.util.Log.e("NRS_WEBVIEW",
-                    "Renderer process gone; didCrash=" +
-                    detail.didCrash() + ", priority=" +
-                    detail.rendererPriorityAtExit());
-
-                runOnUiThread(() ->
-                    android.widget.Toast.makeText(
-                        MainActivity.this,
-                        "تعطلت واجهة WebView. أغلق التطبيق وأرسل تقرير الأخطاء.",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                );
-                return true;
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-
-                // NRS_PRINT_SERVICE_WORKER_REFRESH_V1
-                // إزالة نسخة الواجهة القديمة من Service Worker مرة واحدة.
-                if (!nrsPrintCacheRefreshDone) {
-                    nrsPrintCacheRefreshDone = true;
-                    view.evaluateJavascript(
-                        "(function(){try{" +
-                        "if(!navigator.serviceWorker||!navigator.serviceWorker.getRegistrations)" +
-                        "return Promise.resolve('unsupported');" +
-                        "return navigator.serviceWorker.getRegistrations().then(function(rs){" +
-                        "return Promise.all(rs.map(function(r){return r.unregister();}));" +
-                        "});" +
-                        "}catch(e){return Promise.resolve('error');}})()",
-                        result -> runOnUiThread(() -> {
-                            view.clearCache(true);
-                            view.loadUrl(
-                                "http://127.0.0.1:3001/index.html?nrs_print_refresh=1"
-                            );
-                        })
-                    );
-                    return;
-                }
-
-                view.evaluateJavascript(
-                    "(function() {" +
-                    "var path = location.pathname;" +
-                    "var adminPage = (path === '/admin' || path === '/admin.html');" +
-                    "var hasPassword = !!document.querySelector('input[type=password]');" +
-                    "return adminPage && hasPassword;" +
-                    "})()",
-                    result -> runOnUiThread(() -> {
-                        boolean show = "true".equals(result);
-                        storeHomeButton.setVisibility(
-                            show ? android.view.View.VISIBLE : android.view.View.GONE
-                        );
-                    })
-                );
-            }
-        });
-
-        web.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onPermissionRequest(PermissionRequest request) {
-                runOnUiThread(() -> {
-                    Uri origin = request.getOrigin();
-                    String host = origin == null ? "" : origin.getHost();
-                    int port = origin == null ? -1 : origin.getPort();
-
-                    // لا نمنح الكاميرا إلا لواجهة التطبيق المحلية المتوقعة.
-                    if (!"127.0.0.1".equals(host) ||
-                        (port != 3001 && port != -1)) {
-                        request.deny();
-                        return;
-                    }
-
-                    boolean wantsCamera = false;
-                    for (String resource : request.getResources()) {
-                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(resource)) {
-                            wantsCamera = true;
-                        }
-                    }
-
-                    if (!wantsCamera) {
-                        request.deny();
-                        return;
-                    }
-
-                    if (checkSelfPermission(Manifest.permission.CAMERA)
-                            == PackageManager.PERMISSION_GRANTED) {
-                        request.grant(new String[] {
-                            PermissionRequest.RESOURCE_VIDEO_CAPTURE
-                        });
-                    } else {
-                        if (pendingCameraRequest != null) {
-                            pendingCameraRequest.deny();
-                        }
-                        pendingCameraRequest = request;
-                        requestPermissions(
-                            new String[] { Manifest.permission.CAMERA },
-                            CAMERA_REQUEST
-                        );
-                    }
-                });
-            }
-        });
-
-        layout.addView(web, new LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT, 0, 1
-        ));
-
-        setContentView(layout);
-        startEmbeddedServerAndLoad(web);
+        nrsStartNativeServer(status, retry);
     }
+
 
     @Override
     public void onRequestPermissionsResult(
@@ -455,6 +167,135 @@ storeHomeButton.setOnClickListener(v ->
     @Override
     public void onBackPressed() {
         super.onBackPressed();
+    }
+
+
+
+    // NRS_NATIVE_STARTUP_STAGE1_V1
+    private void nrsStartNativeServer(
+            final TextView status, final Button retry) {
+        status.setText("جارٍ تجهيز ملفات التطبيق والخادم المحلي...");
+        retry.setEnabled(false);
+
+        final java.io.File root =
+            new java.io.File(getFilesDir(), "nrs-server");
+        final java.io.File data =
+            new java.io.File(getNoBackupFilesDir(), "data");
+        final java.io.File tmp = getCacheDir();
+        final java.io.File home = getFilesDir();
+        final String edition = BuildConfig.NRS_APP_EDITION;
+        final String password;
+
+        try {
+            nrsCopyAssetTree("nrs-server", root);
+            password = "owner".equals(edition)
+                ? nrsGetOrCreateInitialPassword() : "";
+
+            if (!new java.io.File(root, "server.js").isFile()
+                    || !new java.io.File(root, "mobile-entry.js").isFile()) {
+                throw new java.io.IOException(
+                    "ملفات الخادم المضمّن غير مكتملة");
+            }
+            if (!data.exists() && !data.mkdirs()) {
+                throw new java.io.IOException(
+                    "تعذر إنشاء مجلد بيانات التطبيق");
+            }
+        } catch (Exception error) {
+            status.setText("تعذر تجهيز الخادم:\n" +
+                String.valueOf(error.getMessage()));
+            retry.setEnabled(true);
+            return;
+        }
+
+        synchronized (MainActivity.class) {
+            if (!nrsNodeStarted) {
+                nrsNodeStarted = true;
+                new Thread(() -> {
+                    try {
+                        android.util.Log.i("NRS_STARTUP",
+                            "Starting embedded Node for Native UI");
+                        int result = startNodeWithArguments(new String[] {
+                            "node",
+                            new java.io.File(root, "mobile-entry.js")
+                                .getAbsolutePath(),
+                            data.getAbsolutePath(),
+                            tmp.getAbsolutePath(),
+                            home.getAbsolutePath(),
+                            root.getAbsolutePath(),
+                            password,
+                            edition
+                        });
+                        android.util.Log.e("NRS_STARTUP",
+                            "Embedded Node returned: " + result);
+                    } catch (Throwable error) {
+                        android.util.Log.e("NRS_STARTUP",
+                            "Embedded Node failed", error);
+                    } finally {
+                        synchronized (MainActivity.class) {
+                            nrsNodeStarted = false;
+                        }
+                    }
+                }, "NRS-Embedded-Node-Native").start();
+            }
+        }
+
+        new Thread(() -> {
+            boolean ready = false;
+            for (int attempt = 0; attempt < 60 && !ready; attempt++) {
+                java.net.HttpURLConnection connection = null;
+                try {
+                    connection = (java.net.HttpURLConnection)
+                        new java.net.URL(
+                            "http://127.0.0.1:3001/api/status"
+                        ).openConnection();
+                    connection.setConnectTimeout(1500);
+                    connection.setReadTimeout(1500);
+                    connection.setUseCaches(false);
+                    ready = connection.getResponseCode() == 200;
+                } catch (Exception error) {
+                    android.util.Log.w("NRS_STARTUP",
+                        "Native server readiness attempt " +
+                        (attempt + 1) + " failed", error);
+                } finally {
+                    if (connection != null) connection.disconnect();
+                }
+
+                if (!ready && attempt < 59) {
+                    try {
+                        Thread.sleep(1000);
+                    } catch (InterruptedException error) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+
+            final boolean serverReady = ready;
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+
+                if (!serverReady) {
+                    status.setText(
+                        "لم يستجب الخادم المحلي خلال المهلة.\n" +
+                        "تحقق من ملفات التطبيق ثم أعد المحاولة."
+                    );
+                    retry.setEnabled(true);
+                    return;
+                }
+
+                status.setText(
+                    "الخادم المحلي يعمل بنجاح.\n" +
+                    "قاعدة البيانات المحلية محفوظة في مساحة التطبيق."
+                );
+                retry.setEnabled(true);
+                android.util.Log.i("NRS_STARTUP",
+                    "Native shell connected to local server");
+
+                if ("owner".equals(edition)) {
+                    nrsShowFirstCredentials(password);
+                }
+            });
+        }, "NRS-Native-Readiness").start();
     }
 
 
