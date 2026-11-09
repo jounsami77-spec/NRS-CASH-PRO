@@ -116,7 +116,34 @@ addColumn('products','purchase_price','REAL NOT NULL DEFAULT 0');
 addColumn('products','unit',"TEXT NOT NULL DEFAULT 'piece'");
 addColumn('products','pack_size','REAL NOT NULL DEFAULT 1');
 addColumn('sale_items','unit',"TEXT NOT NULL DEFAULT 'piece'");
+
 addColumn('sale_items','base_quantity','REAL NOT NULL DEFAULT 0');
+
+// NRS_INVOICE_LIFECYCLE_V1
+addColumn('sales','customer_name',"TEXT NOT NULL DEFAULT ''");
+addColumn('sales','customer_phone',"TEXT NOT NULL DEFAULT ''");
+addColumn('sales','status',"TEXT NOT NULL DEFAULT 'sold'");
+addColumn('sale_items','is_cancelled','INTEGER NOT NULL DEFAULT 0');
+addColumn('sale_items','cancelled_at','TEXT');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS invoice_audit (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ store_id INTEGER NOT NULL,
+ sale_id INTEGER NOT NULL,
+ action TEXT NOT NULL,
+ details TEXT NOT NULL DEFAULT '{}',
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_invoice_audit_sale
+ ON invoice_audit(store_id,sale_id,id);
+CREATE INDEX IF NOT EXISTS idx_sales_customer_name
+ ON sales(store_id,customer_name);
+CREATE INDEX IF NOT EXISTS idx_sales_customer_phone
+ ON sales(store_id,customer_phone);
+`);
+// END NRS_INVOICE_LIFECYCLE_V1
+
 
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_users_store_id ON users(store_id);
@@ -838,16 +865,16 @@ if (p==='/api/products' && req.method==='GET') {
   let rows;
   if(latest) {
    rows=db.prepare(
-    'SELECT id,total,created_at FROM sales WHERE store_id=? AND id>? ORDER BY id DESC'
+    'SELECT id,total,status,created_at FROM sales WHERE store_id=? AND id>? ORDER BY id DESC'
    ).all(storeId,latest.last_sale_id);
   } else {
    rows=db.prepare(
-    "SELECT id,total,created_at FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id DESC"
+    "SELECT id,total,status,created_at FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id DESC"
    ).all(storeId);
   }
 
   const count=rows.length;
-  const total=Math.round(rows.reduce((sum,x)=>sum+Number(x.total||0),0)*100)/100;
+  const total=Math.round(rows.filter(x=>!['cancelled','returned'].includes(x.status)).reduce((sum,x)=>sum+Number(x.total||0),0)*100)/100;
   const closures=db.prepare(
    'SELECT id,period_start_sale_id,last_sale_id,sale_count,total,sale_ids,closed_at FROM daily_closures WHERE store_id=? ORDER BY id DESC LIMIT 20'
   ).all(storeId).map(c=>({
@@ -882,11 +909,11 @@ if (p==='/api/products' && req.method==='GET') {
     let rows;
     if(latest) {
      rows=db.prepare(
-      'SELECT id,total FROM sales WHERE store_id=? AND id>? ORDER BY id'
+      'SELECT id,total,status FROM sales WHERE store_id=? AND id>? ORDER BY id'
      ).all(storeId,latest.last_sale_id);
     } else {
      rows=db.prepare(
-      "SELECT id,total FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id"
+      "SELECT id,total,status FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id"
      ).all(storeId);
     }
 
@@ -896,7 +923,7 @@ if (p==='/api/products' && req.method==='GET') {
     }
 
     const lastId=Math.max(...rows.map(x=>Number(x.id)));
-    const total=Math.round(rows.reduce((sum,x)=>sum+Number(x.total||0),0)*100)/100;
+    const total=Math.round(rows.filter(x=>!['cancelled','returned'].includes(x.status)).reduce((sum,x)=>sum+Number(x.total||0),0)*100)/100;
     const ids=JSON.stringify(rows.map(x=>Number(x.id)));
 
     const result=db.prepare(
@@ -923,124 +950,242 @@ if (p==='/api/products' && req.method==='GET') {
  }
 
  if (p==='/api/sales' && req.method==='GET') {
-  const sales=db.prepare('SELECT * FROM sales WHERE store_id=? ORDER BY id DESC LIMIT 100').all(storeId);
-  const getItems=db.prepare('SELECT name,price,quantity,subtotal,unit,base_quantity FROM sale_items WHERE sale_id=? AND store_id=? ORDER BY id');
+  const q=String(url.searchParams.get('q')||'').trim().slice(0,120);
+  let sales;
+  if(q) {
+   sales=db.prepare(`SELECT * FROM sales WHERE store_id=? AND
+    (CAST(id AS TEXT)=? OR customer_name LIKE ? OR customer_phone LIKE ?)
+    ORDER BY id DESC LIMIT 100`)
+    .all(storeId,q,'%'+q+'%','%'+q+'%');
+  } else {
+   sales=db.prepare('SELECT * FROM sales WHERE store_id=? ORDER BY id DESC LIMIT 100').all(storeId);
+  }
+  const getItems=db.prepare(`SELECT id,product_id,name,price,quantity,subtotal,
+    unit,base_quantity,is_cancelled,cancelled_at
+    FROM sale_items WHERE sale_id=? AND store_id=? ORDER BY id`);
   for(const sale of sales) sale.items=getItems.all(sale.id,storeId);
   return send(res,200,sales);
  }
 
 
- // NRS_SAFE_INVOICE_DELETE_V1
+
+ // NRS_INVOICE_SOFT_CANCEL_V1
  const invoiceDeleteMatch = p.match(/^\/api\/sales\/(\d+)$/);
  if (invoiceDeleteMatch && req.method==='DELETE') {
   const saleId=Number(invoiceDeleteMatch[1]);
-
-  if (!Number.isSafeInteger(saleId) || saleId<1)
+  if(!Number.isSafeInteger(saleId)||saleId<1)
    return send(res,400,{error:'رقم الفاتورة غير صالح'});
-
   try {
    db.exec('BEGIN IMMEDIATE');
-   try {
-    const sale=db.prepare(
-     'SELECT id,total,store_id FROM sales WHERE id=? AND store_id=?'
-    ).get(saleId,storeId);
-
-    if (!sale) {
-     db.exec('ROLLBACK');
-     return send(res,404,{error:'الفاتورة غير موجودة في متجرك'});
-    }
-
-    // لا نحذف فاتورة دخلت في تقرير إغلاق سابق.
-    const closures=db.prepare(
-     'SELECT sale_ids FROM daily_closures WHERE store_id=?'
-    ).all(storeId);
-
-    for (const closure of closures) {
-     let ids;
-     try {
-      ids=JSON.parse(closure.sale_ids);
-     } catch (_) {
-      throw new Error('تعذر التحقق من تقارير الإغلاق؛ أُلغي الحذف لحماية الحسابات');
-     }
-     if (!Array.isArray(ids))
-      throw new Error('بيانات تقرير الإغلاق غير سليمة؛ أُلغي الحذف');
-     if (ids.some(id=>Number(id)===saleId))
-      throw new Error('لا يمكن حذف هذه الفاتورة لأنها مشمولة في تقرير إغلاق يومي');
-    }
-
-    const items=db.prepare(
-     `SELECT product_id,base_quantity,store_id,name
-      FROM sale_items WHERE sale_id=? AND store_id=? ORDER BY id`
-    ).all(saleId,storeId);
-
-    // إعادة الكمية الأساسية الفعلية التي خُصمت عند البيع.
-    const restore=db.prepare(
-     'UPDATE products SET stock=stock+? WHERE id=? AND store_id=?'
-    );
-
-    for (const item of items) {
-     // المنتج الذي حُذف سابقاً لا يوجد مخزون حالي لإرجاعه.
-     if (item.product_id===null || item.product_id===undefined) continue;
-
-     const baseQuantity=Number(item.base_quantity);
-     if (!Number.isFinite(baseQuantity) || baseQuantity<=0)
-      throw new Error(
-       'تعذر استرجاع مخزون المنتج «'+item.name+
-       '» بسبب نقص بيانات الكمية الأساسية. لم تُحذف الفاتورة.'
-      );
-
-     const product=db.prepare(
-      'SELECT id FROM products WHERE id=? AND store_id=?'
-     ).get(item.product_id,storeId);
-
-     if (!product)
-      throw new Error(
-       'تعذر العثور على المنتج الأصلي «'+item.name+
-       '» في هذا المحل. لم تُحذف الفاتورة.'
-      );
-
-     const result=restore.run(baseQuantity,item.product_id,storeId);
-     if (result.changes!==1)
-      throw new Error('تعذر إعادة مخزون المنتج «'+item.name+'»');
-    }
-
-    const deletedItems=db.prepare(
-     'DELETE FROM sale_items WHERE sale_id=? AND store_id=?'
-    ).run(saleId,storeId);
-
-    const deletedSale=db.prepare(
-     'DELETE FROM sales WHERE id=? AND store_id=?'
-    ).run(saleId,storeId);
-
-    if (deletedSale.changes!==1)
-     throw new Error('تعذر حذف الفاتورة؛ أُلغي التعديل');
-
-    db.exec('COMMIT');
-
-    return send(res,200,{
-     ok:true,
-     deleted:true,
-     saleId,
-     restoredItems:items.filter(x=>x.product_id!==null).length,
-     message:'تم حذف الفاتورة وإعادة كميات المنتجات إلى المخزون'
-    });
-   } catch(e) {
-    try { db.exec('ROLLBACK'); } catch (_) {}
-    throw e;
+   const sale=db.prepare('SELECT * FROM sales WHERE id=? AND store_id=?')
+    .get(saleId,storeId);
+   if(!sale) throw new Error('الفاتورة غير موجودة');
+   if(sale.status==='cancelled'||sale.status==='returned')
+    throw new Error('الفاتورة ملغاة أو مسترجعة سابقاً');
+   const closed=db.prepare('SELECT sale_ids FROM daily_closures WHERE store_id=?')
+    .all(storeId);
+   for(const c of closed) {
+    let ids;
+    try { ids=JSON.parse(c.sale_ids); } catch { throw new Error('تعذر التحقق من تقارير الإغلاق'); }
+    if(!Array.isArray(ids)) throw new Error('بيانات تقرير الإغلاق غير سليمة');
+    if(ids.some(x=>Number(x)===saleId))
+     throw new Error('لا يمكن تعديل فاتورة مشمولة في تقرير إغلاق');
    }
+   const lines=db.prepare(`SELECT * FROM sale_items
+    WHERE sale_id=? AND store_id=? AND is_cancelled=0 ORDER BY id`)
+    .all(saleId,storeId);
+   // لا نلغي الفاتورة إذا تعذر ضمان إعادة مخزون أي بند.
+   // يشمل ذلك المنتج المحذوف والكمية الأساسية المفقودة أو غير الصالحة.
+   for(const x of lines) restoreInvoiceLine(x);
+   db.prepare(`UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP
+    WHERE sale_id=? AND store_id=? AND is_cancelled=0`).run(saleId,storeId);
+   db.prepare("UPDATE sales SET status='cancelled',total=0 WHERE id=? AND store_id=?")
+    .run(saleId,storeId);
+   db.prepare('INSERT INTO invoice_audit(store_id,sale_id,action,details) VALUES(?,?,?,?)')
+    .run(storeId,saleId,'cancel',JSON.stringify({restoredLines:lines.length,previousTotal:sale.total}));
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,cancelled:true,saleId,
+    message:'تم إلغاء الفاتورة وحفظ سجلها وإعادة المخزون'});
   } catch(e) {
-   const message=String(e.message||'');
-   const status=(
-    message.includes('لا يمكن حذف') ||
-    message.includes('تعذر') ||
-    message.includes('غير موجود') ||
-    message.includes('غير سليمة')
-   ) ? 409 : 500;
-
-   console.error('invoice-delete:',e);
-   return send(res,status,{error:message||'تعذر حذف الفاتورة'});
+   try{db.exec('ROLLBACK')}catch{}
+   return send(res,409,{error:e.message});
   }
  }
+ // END NRS_INVOICE_SOFT_CANCEL_V1
+
+
+ // NRS_INVOICE_OPERATIONS_V1
+ function invoiceIsClosed(id) {
+  const rows=db.prepare('SELECT sale_ids FROM daily_closures WHERE store_id=?').all(storeId);
+  for(const row of rows) {
+   let ids;
+   try { ids=JSON.parse(row.sale_ids); } catch { throw new Error('تعذر قراءة تقارير الإغلاق'); }
+   if(!Array.isArray(ids)) throw new Error('بيانات الإغلاق غير سليمة');
+   if(ids.some(x=>Number(x)===Number(id))) return true;
+  }
+  return false;
+ }
+ function eligibleReturns() {
+  const type=db.prepare('SELECT business_type FROM stores WHERE id=?').get(storeId)?.business_type||'grocery';
+  return ['auto_parts','hardware','quincaillerie'].includes(type);
+ }
+ function addAudit(saleId,action,details) {
+  db.prepare('INSERT INTO invoice_audit(store_id,sale_id,action,details) VALUES(?,?,?,?)')
+   .run(storeId,saleId,action,JSON.stringify(details||{}));
+ }
+ function restoreInvoiceLine(line) {
+  if(line.product_id==null) throw new Error('المنتج الأصلي محذوف؛ لا يمكن ضمان إرجاع المخزون: '+line.name);
+  const qty=Number(line.base_quantity);
+  if(!Number.isFinite(qty)||qty<=0) throw new Error('الكمية الأساسية غير صالحة: '+line.name);
+  const r=db.prepare('UPDATE products SET stock=stock+? WHERE id=? AND store_id=?')
+   .run(qty,line.product_id,storeId);
+  if(r.changes!==1) throw new Error('تعذر إعادة مخزون '+line.name);
+ }
+ function saleProduct(productId,quantity,saleUnit) {
+  const product=db.prepare('SELECT * FROM products WHERE id=? AND store_id=?').get(productId,storeId);
+  if(!product) throw new Error('المنتج غير موجود في هذا المحل');
+  let unit=product.unit||'piece', price=Number(product.price), stockUnits=quantity;
+  const pack=Number(product.pack_size||1);
+  if(unit==='piece'&&pack>1) {
+   if(!['piece','carton'].includes(saleUnit)) throw new Error('اختر الحبة أو الكرتونة للمنتج '+product.name);
+   unit=saleUnit;
+   if(unit==='carton'){stockUnits=quantity*pack;price*=pack;}
+  }
+  if(!Number.isFinite(stockUnits)||stockUnits<=0) throw new Error('كمية غير صالحة');
+  if(Number(product.stock)<stockUnits) throw new Error('المخزون غير كافٍ للمنتج '+product.name);
+  return {...product,quantity,unit,price,stockUnits,subtotal:Math.round(price*quantity*100)/100};
+ }
+
+ // إلغاء بند واحد وإرجاع مخزونه مرة واحدة
+ const itemCancel=p.match(/^\/api\/sales\/(\d+)\/items\/(\d+)\/cancel$/);
+ if(itemCancel&&req.method==='POST') {
+  const saleId=Number(itemCancel[1]), itemId=Number(itemCancel[2]);
+  try {
+   if(!eligibleReturns()) return send(res,403,{error:'إلغاء بند الفاتورة متاح لمحلات قطع الغيار والخردوات فقط'});
+   db.exec('BEGIN IMMEDIATE');
+   const sale=db.prepare('SELECT * FROM sales WHERE id=? AND store_id=?').get(saleId,storeId);
+   if(!sale) throw new Error('الفاتورة غير موجودة');
+   if(!['sold','exchanged'].includes(sale.status)) throw new Error('لا يمكن تعديل حالة هذه الفاتورة');
+   if(invoiceIsClosed(saleId)) throw new Error('الفاتورة مشمولة في تقرير إغلاق');
+   const line=db.prepare('SELECT * FROM sale_items WHERE id=? AND sale_id=? AND store_id=? AND is_cancelled=0')
+    .get(itemId,saleId,storeId);
+   if(!line) throw new Error('بند الفاتورة غير موجود أو ملغى سابقاً');
+   restoreInvoiceLine(line);
+   db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE id=?')
+    .run(itemId);
+   const active=db.prepare('SELECT COALESCE(SUM(subtotal),0) total,COUNT(*) n FROM sale_items WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .get(saleId,storeId);
+   const status=Number(active.n)===0?'returned':(sale.status==='exchanged'?'exchanged':'sold');
+   db.prepare('UPDATE sales SET total=?,status=? WHERE id=? AND store_id=?')
+    .run(Math.round(Number(active.total)*100)/100,status,saleId,storeId);
+   addAudit(saleId,'partial_return',{itemId,line,restored:Number(line.base_quantity)});
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,saleId,status,total:active.total,message:'تم إلغاء المنتج وإعادة مخزونه'});
+  } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
+ }
+
+ // استرجاع كامل — حصرياً لأنواع المحلات المؤهلة
+ const returnMatch=p.match(/^\/api\/sales\/(\d+)\/return$/);
+ if(returnMatch&&req.method==='POST') {
+  const saleId=Number(returnMatch[1]);
+  try {
+   if(!eligibleReturns()) return send(res,403,{error:'الاسترجاع متاح لمحلات قطع الغيار والخردوات فقط'});
+   db.exec('BEGIN IMMEDIATE');
+   const sale=db.prepare('SELECT * FROM sales WHERE id=? AND store_id=?').get(saleId,storeId);
+   if(!sale) throw new Error('الفاتورة غير موجودة');
+   if(!['sold','exchanged'].includes(sale.status)) throw new Error('الفاتورة ليست في حالة بيع أو استبدال');
+   if(invoiceIsClosed(saleId)) throw new Error('الفاتورة مشمولة في تقرير إغلاق');
+   const lines=db.prepare('SELECT * FROM sale_items WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .all(saleId,storeId);
+   for(const line of lines) restoreInvoiceLine(line);
+   db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .run(saleId,storeId);
+   db.prepare("UPDATE sales SET total=0,status='returned' WHERE id=? AND store_id=?").run(saleId,storeId);
+   addAudit(saleId,'full_return',{lines:lines.length,previousTotal:sale.total});
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,saleId,status:'returned',message:'تم استرجاع الفاتورة وإعادة المخزون'});
+  } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
+ }
+
+ // استبدال بند بمنتج آخر مع احتساب فرق السعر
+ const exchangeMatch=p.match(/^\/api\/sales\/(\d+)\/items\/(\d+)\/exchange$/);
+ if(exchangeMatch&&req.method==='POST') {
+  const saleId=Number(exchangeMatch[1]), itemId=Number(exchangeMatch[2]);
+  try {
+   if(!eligibleReturns()) return send(res,403,{error:'الاستبدال متاح لمحلات قطع الغيار والخردوات فقط'});
+   const d=await bodyJSON(req);
+   const newId=Number(d.productId), qty=Number(d.quantity), unit=String(d.saleUnit||'');
+   if(!Number.isSafeInteger(newId)||newId<1||!Number.isFinite(qty)||qty<=0)
+    return send(res,400,{error:'بيانات المنتج البديل غير صالحة'});
+   db.exec('BEGIN IMMEDIATE');
+   const sale=db.prepare('SELECT * FROM sales WHERE id=? AND store_id=?').get(saleId,storeId);
+   if(!sale||!['sold','exchanged'].includes(sale.status)) throw new Error('الفاتورة غير موجودة أو غير قابلة للاستبدال');
+   if(invoiceIsClosed(saleId)) throw new Error('الفاتورة مشمولة في تقرير إغلاق');
+   const old=db.prepare('SELECT * FROM sale_items WHERE id=? AND sale_id=? AND store_id=? AND is_cancelled=0')
+    .get(itemId,saleId,storeId);
+   if(!old) throw new Error('المنتج الأصلي غير موجود أو مستبدل سابقاً');
+   restoreInvoiceLine(old);
+   const replacement=saleProduct(newId,qty,unit);
+   const deduct=db.prepare('UPDATE products SET stock=stock-? WHERE id=? AND store_id=? AND stock>=?')
+    .run(replacement.stockUnits,newId,storeId,replacement.stockUnits);
+   if(deduct.changes!==1) throw new Error('تعذر خصم مخزون المنتج البديل');
+   db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE id=?').run(itemId);
+   db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
+    VALUES(?,?,?,?,?,?,?,?,?)`)
+    .run(saleId,newId,replacement.name,replacement.price,qty,replacement.subtotal,storeId,replacement.unit,replacement.stockUnits);
+   const active=db.prepare('SELECT COALESCE(SUM(subtotal),0) total FROM sale_items WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .get(saleId,storeId);
+   const difference=Math.round((replacement.subtotal-Number(old.subtotal))*100)/100;
+   db.prepare("UPDATE sales SET total=?,status='exchanged' WHERE id=? AND store_id=?")
+    .run(Math.round(Number(active.total)*100)/100,saleId,storeId);
+   addAudit(saleId,'exchange',{oldItem:old,newProductId:newId,newProductName:replacement.name,newQuantity:qty,newSubtotal:replacement.subtotal,priceDifference:difference});
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,saleId,status:'exchanged',priceDifference:difference,
+    customerOwes:Math.max(0,difference),refund:Math.max(0,-difference),
+    message:difference>0?'المنتج البديل أغلى؛ المبلغ المستحق على الزبون '+difference:
+     difference<0?'المنتج البديل أرخص؛ المبلغ المرجع للزبون '+(-difference):'لا يوجد فرق في السعر'});
+  } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
+ }
+
+ // تعديل كامل لبنود فاتورة غير مغلقة: إعادة القديم ثم التحقق والخصم الجديد داخل معاملة واحدة
+ const editMatch=p.match(/^\/api\/sales\/(\d+)$/);
+ if(editMatch&&req.method==='PUT') {
+  const saleId=Number(editMatch[1]);
+  try {
+   const d=await bodyJSON(req);
+   if(!Array.isArray(d.items)||!d.items.length||d.items.length>100)
+    return send(res,400,{error:'قائمة المنتجات غير صالحة'});
+   db.exec('BEGIN IMMEDIATE');
+   const sale=db.prepare('SELECT * FROM sales WHERE id=? AND store_id=?').get(saleId,storeId);
+   if(!sale||!['sold','exchanged'].includes(sale.status)) throw new Error('الفاتورة غير موجودة أو غير قابلة للتعديل');
+   if(invoiceIsClosed(saleId)) throw new Error('الفاتورة مشمولة في تقرير إغلاق');
+   const oldLines=db.prepare('SELECT * FROM sale_items WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .all(saleId,storeId);
+   for(const line of oldLines) restoreInvoiceLine(line);
+   const newLines=d.items.map(x=>{
+    const id=Number(x.id), quantity=Number(x.quantity);
+    if(!Number.isSafeInteger(id)||id<1||!Number.isFinite(quantity)||quantity<=0) throw new Error('كمية أو منتج غير صالح');
+    return saleProduct(id,quantity,String(x.saleUnit||x.unit||''));
+   });
+   const upd=db.prepare('UPDATE products SET stock=stock-? WHERE id=? AND store_id=? AND stock>=?');
+   for(const x of newLines) if(upd.run(x.stockUnits,x.id,storeId,x.stockUnits).changes!==1)
+    throw new Error('تعذر خصم مخزون '+x.name);
+   db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE sale_id=? AND store_id=? AND is_cancelled=0')
+    .run(saleId,storeId);
+   const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
+    VALUES(?,?,?,?,?,?,?,?,?)`);
+   let total=0;
+   for(const x of newLines){ins.run(saleId,x.id,x.name,x.price,x.quantity,x.subtotal,storeId,x.unit,x.stockUnits);total+=x.subtotal;}
+   const customerName=String(d.customerName??sale.customer_name??'').trim().slice(0,120);
+   const customerPhone=String(d.customerPhone??sale.customer_phone??'').trim().slice(0,40);
+   db.prepare("UPDATE sales SET total=?,customer_name=?,customer_phone=?,status=? WHERE id=? AND store_id=?")
+    .run(Math.round(total*100)/100,customerName,customerPhone,sale.status==='exchanged'?'exchanged':'sold',saleId,storeId);
+   addAudit(saleId,'edit',{oldLines,newLines,previousTotal:sale.total,newTotal:total});
+   db.exec('COMMIT');
+   return send(res,200,{ok:true,saleId,total:Math.round(total*100)/100,message:'تم تعديل الفاتورة والمخزون'});
+  } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
+ }
+ // END NRS_INVOICE_OPERATIONS_V1
 
  if (p==='/api/sales' && req.method==='POST') {
   try {
@@ -1092,7 +1237,10 @@ if (p==='/api/products' && req.method==='GET') {
      });
     }
     total=Math.round(total*100)/100;
-    const sale=db.prepare('INSERT INTO sales(total,store_id) VALUES(?,?)').run(total,storeId);
+    const customerName=String(data.customerName||'').trim().slice(0,120);
+    const customerPhone=String(data.customerPhone||'').trim().slice(0,40);
+    const sale=db.prepare("INSERT INTO sales(total,store_id,customer_name,customer_phone,status) VALUES(?,?,?,?,'sold')")
+     .run(total,storeId,customerName,customerPhone);
     const saleId=Number(sale.lastInsertRowid);
     const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
       VALUES(?,?,?,?,?,?,?,?,?)`);
@@ -1173,11 +1321,11 @@ function autoCloseDuePeriods() {
    let currentRows;
    if(currentLatest) {
     currentRows=db.prepare(
-     'SELECT id,total FROM sales WHERE store_id=? AND id>? ORDER BY id'
+     'SELECT id,total,status FROM sales WHERE store_id=? AND id>? ORDER BY id'
     ).all(storeId,currentLatest.last_sale_id);
    } else {
     currentRows=db.prepare(
-     "SELECT id,total FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id"
+     "SELECT id,total,status FROM sales WHERE store_id=? AND date(created_at,'localtime')=date('now','localtime') ORDER BY id"
     ).all(storeId);
    }
    if(!currentRows.length) {
@@ -1194,7 +1342,7 @@ function autoCloseDuePeriods() {
     db.exec('ROLLBACK');
     continue;
    }
-   const total=Math.round(currentRows.reduce((a,x)=>a+Number(x.total||0),0)*100)/100;
+   const total=Math.round(currentRows.filter(x=>!['cancelled','returned'].includes(x.status)).reduce((a,x)=>a+Number(x.total||0),0)*100)/100;
    const ids=JSON.stringify(currentRows.map(x=>Number(x.id)));
    db.prepare(
     'INSERT INTO daily_closures(store_id,period_start_sale_id,last_sale_id,sale_count,total,sale_ids) VALUES(?,?,?,?,?,?)'
@@ -1245,7 +1393,7 @@ const autoCloseTimer=setInterval(()=>{
 if(autoCloseTimer.unref) autoCloseTimer.unref();
 try { autoCloseDuePeriods(); } catch(e) { console.error('[auto-daily-close]',e.message); }
 
-server.listen(Number(process.env.PORT||3001),'0.0.0.0',()=>{
+server.listen(Number(process.env.PORT||3001),process.env.NRS_HOST||'127.0.0.1',()=>{
  console.log('cash.pro.S.M.G.R: http://127.0.0.1:'+(process.env.PORT||3001));
  console.log('Admin panel: http://127.0.0.1:'+(process.env.PORT||3001)+'/admin');
  console.log('SQLite: '+path.join(DATA,'cashier.db'));

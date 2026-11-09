@@ -653,6 +653,11 @@ fetch('/api/status').then(r=>r.json()).then(info=>{
     <div id="dailyCloseStatus" class="status"></div>
   </div>
   <div class="section-head"><h2>🧾 سجل المبيعات</h2><button class="secondary" id="refreshSales">تحديث</button></div>
+    <div style="display:flex;gap:8px;margin:8px 0">
+      <input id="invoiceSearch" placeholder="ابحث برقم الفاتورة أو اسم الزبون أو الهاتف" style="flex:1">
+      <button class="secondary" id="searchInvoices" type="button">بحث</button>
+    </div>
+
     <div id="sales" class="list"></div>
   </div>
 </section>
@@ -954,6 +959,7 @@ async function configureUnitsForActivity(){
  try{
   const profile=await request('/api/business-profile');
   const activity=profile.businessType||'grocery';
+  window.NRS_BUSINESS_TYPE=activity;
   const units=choices[activity]||choices.other;
   const previous=select.value;
   select.replaceChildren(...units.map(unit=>{
@@ -1200,20 +1206,54 @@ $('addProduct').onclick=async()=>{
  }catch(e){msg('productStatus',e.message)}
 };
 
-function receiptHTML(saleId,items,total,date){
+function receiptHTML(saleId,items,total,date,customerName='',customerPhone=''){
  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const rows=items.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.quantity} ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price)} دج / ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.subtotal!=null?Number(x.subtotal):Number(x.price)*Number(x.quantity))} دج</td></tr>`).join('');
+ const linkedSale=(typeof lastSale!=='undefined'&&lastSale&&String(lastSale.saleId)===String(saleId))?lastSale:null;
+ customerName=String(customerName||linkedSale?.customerName||'').trim();
+ customerPhone=String(customerPhone||linkedSale?.customerPhone||'').trim();
+ const activeItems=(Array.isArray(items)?items:[]).filter(x=>!x.is_cancelled);
+ const rows=activeItems.map(x=>`<tr><td>${esc(x.name)}</td><td>${x.quantity} ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.price)} دج / ${esc(unitLabel(x.unit||'piece'))}</td><td>${money(x.subtotal!=null?Number(x.subtotal):Number(x.price)*Number(x.quantity))} دج</td></tr>`).join('');
  return `<h2>${esc(settings.shopName||'cash.pro.S.M.G.R')}</h2>
  <p>${esc(settings.address||'')}</p><p>${esc(settings.phone||'')}</p><hr>
  <p>فاتورة رقم: ${esc(saleId)}</p><p>${esc(date||new Date().toLocaleString('ar-DZ'))}</p>
+ ${customerName?`<p>اسم الزبون: ${esc(customerName)}</p>`:''}
+ ${customerPhone?`<p>هاتف الزبون: ${esc(customerPhone)}</p>`:''}
  <table><thead><tr><th>المنتج</th><th>الكمية</th><th>السعر</th><th>المجموع</th></tr></thead><tbody>${rows}</tbody></table>
  <div class="r-total">الإجمالي: ${money(total)} دج</div>
  <p class="r-footer">${esc(settings.footer||'شكراً لثقتكم بنا ❤️')}</p>`;
 }
-function printLastReceipt(){
- if(!lastSale)return;
- $('receipt').innerHTML=receiptHTML(lastSale.saleId,lastSale.items,lastSale.total,lastSale.date);
- requestNativePrint();
+async function printLastReceipt(){
+ try{
+  // اقرأ أحدث نسخة من الخادم دائماً، ولا تعتمد على lastSale
+  // حتى لا تتم طباعة بيانات قديمة بعد التعديل أو الاستبدال.
+  const rows=await request('/api/sales');
+  const latest=Array.isArray(rows)
+   ?rows.find(x=>!['cancelled','returned'].includes(x.status||'sold'))
+   :null;
+
+  if(!latest){
+   msg('saleStatus','لا توجد فاتورة محفوظة قابلة للطباعة');
+   return;
+  }
+
+  const active=(latest.items||[]).filter(x=>!x.is_cancelled);
+  if(!active.length){
+   msg('saleStatus','آخر فاتورة لا تحتوي منتجات قابلة للطباعة');
+   return;
+  }
+
+  $('receipt').innerHTML=receiptHTML(
+   latest.id,
+   active,
+   Number(latest.total),
+   latest.created_at,
+   latest.customer_name,
+   latest.customer_phone
+  );
+  requestNativePrint();
+ }catch(e){
+  msg('saleStatus','تعذرت طباعة آخر فاتورة: '+e.message);
+ }
 }
 $('printLast').onclick=printLastReceipt;
 $('printCart').onclick=()=>{
@@ -1238,16 +1278,24 @@ $('checkout').onclick=async()=>{
  $('checkout').disabled=true;
 
  try{
+  const customerName=window.prompt('اسم الزبون (اختياري):','')||'';
+  const customerPhone=window.prompt('رقم هاتف الزبون (اختياري):','')||'';
   const r=await request('/api/sales',{
    method:'POST',
-   body:JSON.stringify({items:sold})
+   body:JSON.stringify({
+    items:sold,
+    customerName:customerName,
+    customerPhone:customerPhone
+   })
   });
 
   lastSale={
    saleId:r.saleId,
    total:r.total,
    items:sold,
-   date:new Date().toLocaleString('ar-DZ')
+   date:new Date().toLocaleString('ar-DZ'),
+   customerName,
+   customerPhone
   };
 
   cart=[];
@@ -1362,7 +1410,8 @@ async function loadDailySummary(){
 
 async function loadSales(){
  try{
-  const rows=await request('/api/sales');
+  const query=String($('invoiceSearch')?.value||'').trim();
+  const rows=await request('/api/sales'+(query?'?q='+encodeURIComponent(query):''));
   const list=$('sales');list.innerHTML='';
   const groups=new Map();
   rows.forEach(s=>{
@@ -1376,7 +1425,7 @@ async function loadSales(){
    list.innerHTML='<div class="empty">لا توجد مبيعات مسجلة بعد</div>';
   } else {
    for(const [day,items] of groups){
-    const total=items.reduce((sum,x)=>sum+Number(x.total||0),0);
+    const total=items.filter(x=>!['cancelled','returned'].includes(x.status)).reduce((sum,x)=>sum+Number(x.total||0),0);
     const section=document.createElement('section');
     section.className='panel';
     section.style.margin='8px 0';
@@ -1392,61 +1441,124 @@ async function loadSales(){
      const d=document.createElement('div');d.className='item';
      const main=document.createElement('div');main.className='item-main';
      const n=document.createElement('div');n.className='item-name';n.textContent='فاتورة #'+s.id;
-     const m=document.createElement('div');m.className='item-meta';m.textContent=s.created_at||'';
+     const m=document.createElement('div');m.className='item-meta';m.textContent=(s.created_at||'')+' • '+({sold:'مباعة',returned:'مسترجعة',exchanged:'مستبدلة',cancelled:'ملغاة'}[s.status||'sold'])+(s.customer_name?' • الزبون: '+s.customer_name:'')+(s.customer_phone?' • '+s.customer_phone:'');
      main.append(n,m);
      const price=document.createElement('div');price.className='price';price.textContent=money(s.total)+' دج';
      d.append(main,price);
      const details=document.createElement('div');
      details.style.cssText='width:100%;flex-basis:100%;padding:8px 4px;border-top:1px solid var(--line);font-size:13px';
      const saleItems=Array.isArray(s.items)?s.items:[];
+     const activeSaleItems=saleItems.filter(x=>!x.is_cancelled);
      if(!saleItems.length){details.textContent='لا توجد تفاصيل منتجات محفوظة لهذه الفاتورة.';}
      else saleItems.forEach(it=>{
       const line=document.createElement('div');
       const unit=unitLabel(it.unit||'piece');
       const subtotal=it.subtotal==null?Number(it.price)*Number(it.quantity):Number(it.subtotal);
-      line.textContent='• '+it.name+' — '+it.quantity+' '+unit+' × '+money(it.price)+' دج = '+money(subtotal)+' دج';
+      line.textContent=(it.is_cancelled?'↩ ملغى: ':'• ')+it.name+' — '+it.quantity+' '+unit+' × '+money(it.price)+' دج = '+money(subtotal)+' دج';
       line.style.margin='5px 0';details.append(line);
      });
      const printBtn=document.createElement('button');
      printBtn.type='button';printBtn.className='secondary';printBtn.textContent='🖨️ طباعة الفاتورة';
      printBtn.style.cssText='width:100%;margin-top:6px';
+     printBtn.hidden=activeSaleItems.length===0;
+     if(printBtn.hidden)printBtn.style.display='none';
      printBtn.onclick=()=>{
-      if(!saleItems.length){alert('لا توجد تفاصيل منتجات محفوظة لهذه الفاتورة.');return;}
-      $('receipt').innerHTML=receiptHTML(s.id,saleItems,Number(s.total),s.created_at);
+      if(!activeSaleItems.length){alert('لا توجد منتجات فعالة قابلة للطباعة في هذه الفاتورة.');return;}
+      $('receipt').innerHTML=receiptHTML(s.id,activeSaleItems,Number(s.total),s.created_at,s.customer_name,s.customer_phone);
       requestNativePrint();
      };
 
      // NRS_INVOICE_DELETE_BUTTON_V1
      const deleteBtn=document.createElement('button');
      deleteBtn.type='button';
-     deleteBtn.textContent='🗑️ حذف الفاتورة';
+     deleteBtn.textContent='إلغاء الفاتورة';
+     deleteBtn.hidden=['cancelled','returned'].includes(s.status);
+     if(deleteBtn.hidden)deleteBtn.style.display='none';
      deleteBtn.style.cssText=
       'width:100%;margin-top:6px;background:#b42318;color:#fff;border:0;padding:10px;border-radius:8px';
      deleteBtn.onclick=async()=>{
       const amount=money(s.total)+' دج';
       if(!confirm(
-       'تأكيد حذف الفاتورة رقم #'+s.id+'؟\n'+
+       'تأكيد إلغاء الفاتورة رقم #'+s.id+'؟\n'+
        'القيمة: '+amount+'\n\n'+
-       'سيتم إرجاع كميات المنتجات إلى المخزون.\n'+
+       'سيتم حفظ الفاتورة كسجل ملغى وإعادة المخزون.\n'+
        'لا يمكن حذف فاتورة مشمولة في تقرير إغلاق.'
       )) return;
 
       deleteBtn.disabled=true;
-      deleteBtn.textContent='جارٍ حذف الفاتورة...';
+      deleteBtn.textContent='جارٍ إلغاء الفاتورة...';
       try{
        const result=await request(
         '/api/sales/'+encodeURIComponent(s.id),
         {method:'DELETE'}
        );
-       alert(result.message||'تم حذف الفاتورة');
+       alert(result.message||'تم إلغاء الفاتورة');
        await loadSales();
       }catch(e){
-       alert('تعذر حذف الفاتورة: '+e.message);
+       alert('تعذر إلغاء الفاتورة: '+e.message);
        deleteBtn.disabled=false;
-       deleteBtn.textContent='🗑️ حذف الفاتورة';
+       deleteBtn.textContent='إلغاء الفاتورة';
       }
      };
      d.style.flexWrap='wrap';
+
+     const addAction=(label,handler)=>{
+      const b=document.createElement('button');b.type='button';b.className='secondary';
+      b.textContent=label;b.style.cssText='width:100%;margin-top:6px';
+      b.onclick=handler;d.append(b);
+     };
+     if(['sold','exchanged'].includes(s.status||'sold')){
+      if(['auto_parts','hardware','quincaillerie'].includes(window.NRS_BUSINESS_TYPE)){
+      saleItems.filter(x=>!x.is_cancelled).forEach(it=>{
+       addAction('↩ إلغاء '+it.name,async()=>{
+        if(!confirm('إلغاء هذا المنتج وإعادة مخزونه؟'))return;
+        try{
+         await request('/api/sales/'+s.id+'/items/'+it.id+'/cancel',{method:'POST'});
+         alert('تم إلغاء المنتج وإعادة مخزونه');await loadSales();
+        }catch(e){alert(e.message)}
+       });
+      });
+      }
+      addAction('✏️ تعديل الفاتورة',async()=>{
+       const raw=window.prompt('أدخل المنتجات الجديدة بصيغة JSON. مثال: [{"id":1,"quantity":2,"saleUnit":"piece"}]');
+       if(raw===null)return;
+       try{
+        const items=JSON.parse(raw);
+        const result=await request('/api/sales/'+s.id,{method:'PUT',body:JSON.stringify({items})});
+        alert(result.message+' — الإجمالي '+money(result.total)+' دج');await loadSales();
+       }catch(e){alert('تعذر تعديل الفاتورة: '+e.message)}
+      });
+      if(['auto_parts','hardware','quincaillerie'].includes(window.NRS_BUSINESS_TYPE)){
+       addAction('↩ استرجاع الفاتورة كاملة',async()=>{
+        if(!confirm('تأكيد استرجاع الفاتورة كاملة وإعادة المخزون؟'))return;
+        try{const r=await request('/api/sales/'+s.id+'/return',{method:'POST'});alert(r.message);await loadSales();}
+        catch(e){alert(e.message)}
+       });
+       saleItems.filter(x=>!x.is_cancelled).forEach(it=>{
+        addAction('⇄ استبدال '+it.name,async()=>{
+         const productId=Number(window.prompt('رقم المنتج البديل:',''));
+         if(!Number.isSafeInteger(productId)||productId<1)return;
+         const quantity=Number(window.prompt('كمية المنتج البديل:','1'));
+         if(!Number.isFinite(quantity)||quantity<=0)return;
+         const saleUnit=window.prompt('وحدة البيع (piece أو carton):','piece')||'piece';
+         try{
+          const r=await request('/api/sales/'+s.id+'/items/'+it.id+'/exchange',{
+           method:'POST',body:JSON.stringify({productId,quantity,saleUnit})
+          });
+          const exchangeNotice=[
+           r.message||'تم الاستبدال',
+           Number(r.customerOwes)>0?'المبلغ المستحق على الزبون: '+money(r.customerOwes)+' دج':
+            Number(r.refund)>0?'المبلغ المرجع للزبون: '+money(r.refund)+' دج':
+            'فرق السعر: 0 دج'
+          ].join('\n');
+          alert(exchangeNotice);
+          await loadSales();
+         }catch(e){alert('تعذر الاستبدال: '+e.message)}
+        });
+       });
+      }
+     }
+
      d.append(details,printBtn,deleteBtn);
      body.append(d);
 
@@ -1464,6 +1576,9 @@ async function loadSales(){
  }catch(e){$('sales').textContent=e.message}
 }
 $('refreshSales').onclick=loadSales;
+if($('searchInvoices'))$('searchInvoices').onclick=loadSales;
+if($('invoiceSearch'))$('invoiceSearch').addEventListener('keydown',e=>{if(e.key==='Enter')loadSales();});
+
 $('refreshDaily').onclick=loadDailySummary;
 $('closeDailySales').onclick=async()=>{
  if(!confirm('هل تريد حفظ تقرير الفترة الحالية وبدء فترة مبيعات جديدة؟ لن تُحذف أي فاتورة.'))return;

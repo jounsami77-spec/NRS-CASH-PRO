@@ -2,6 +2,7 @@
 
 // NRS_ANDROID_PRODUCTION_MODE_V1
 process.env.NODE_ENV = 'production';
+process.env.NRS_HOST = '127.0.0.1';
 
 const fs = require('node:fs');
 const path = require('node:path');

@@ -14,53 +14,134 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Prepare embedded Node.js runtime
         run: bash scripts/prepare-node-mobile-runtime.sh
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK, NDK and CMake
         shell: bash
         run: |
-          set -eo pipefail
+          set -euo pipefail
+
           SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
           test -n "$SDK_ROOT"
+
           SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" \
+              -type f -name sdkmanager 2>/dev/null | sort -V | tail -n 1)"
           fi
+
           test -x "$SDKMANAGER"
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build owner and customer debug APKs
-        working-directory: android
-        run: gradle --no-daemon :app:assembleOwnerDebug :app:assembleCustomerDebug
+      - name: Restore permanent release signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
 
-      - name: Upload owner APK
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+
+          mkdir -p android/app
+
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" |
+            base64 --decode > android/app/release-key.jks
+
+          test -s android/app/release-key.jks
+          chmod 600 android/app/release-key.jks
+
+          keytool -list \
+            -keystore android/app/release-key.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+          echo "Permanent signing key verified."
+
+      - name: Build APK variants
+        run: |
+          set -euo pipefail
+
+          gradle --no-daemon -p android \
+            :app:assembleOwnerDebug \
+            :app:assembleCustomerDebug \
+            :app:assembleOwnerRelease
+
+      - name: Validate signed owner update APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/owner/release/app-owner-release.apk"
+
+          test -s "$APK"
+
+          SIZE="$(stat -c '%s' "$APK")"
+          echo "APK size: $SIZE bytes"
+          test "$SIZE" -gt 10000000
+
+          unzip -t "$APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          BADGING="$("$AAPT" dump badging "$APK")"
+          echo "$BADGING" | head -5
+
+          echo "$BADGING" |
+            grep -F "package: name='dz.nrs.cashpro' versionCode='15' versionName='1.2.3'"
+
+          mkdir -p test-release
+          cp "$APK" test-release/cash.pro.S.M.G.R-1.2.3-TEST.apk
+
+          sha256sum test-release/*.apk
+
+      - name: Upload signed owner test APK
         uses: actions/upload-artifact@v4
         with:
-          name: nrs-cash-pro-owner-debug
-          path: android/app/build/outputs/apk/owner/debug/*.apk
+          name: nrs-cash-pro-owner-release
+          path: test-release/cash.pro.S.M.G.R-1.2.3-TEST.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
 
-      - name: Upload customer APK
+      - name: Upload debug APKs
         uses: actions/upload-artifact@v4
         with:
-          name: nrs-cash-pro-customer-debug
-          path: android/app/build/outputs/apk/customer/debug/*.apk
+          name: nrs-cash-pro-debug-apks
+          path: |
+            android/app/build/outputs/apk/owner/debug/*.apk
+            android/app/build/outputs/apk/customer/debug/*.apk
           if-no-files-found: error
           retention-days: 7

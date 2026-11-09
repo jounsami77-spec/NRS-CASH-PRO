@@ -63,6 +63,14 @@ try {
       VALUES (NULL, 'admin', ?, 'super_admin', 1)
     `).run(hashPassword(password));
 
+    // NRS_INITIAL_ADMIN_CREATED_MARKER_V1
+    // لا تُنشأ العلامة إلا بعد نجاح إدراج حساب المدير الأول.
+    fs.writeFileSync(
+      path.join(DATA, '.nrs-initial-admin-created'),
+      String(Date.now()),
+      { encoding: 'utf8', mode: 0o600 }
+    );
+
     console.log('تم إنشاء حساب المدير العام الأول.');
     console.log('اسم المستخدم: admin');
     console.log('لم تُنشأ متاجر؛ يستطيع المدير إنشاؤها من لوحة الإدارة.');
