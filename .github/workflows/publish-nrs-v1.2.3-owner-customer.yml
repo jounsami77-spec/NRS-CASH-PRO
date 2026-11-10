@@ -1,9 +1,18 @@
 name: NRS Cash Pro Official Release 1.2.3
 
 on:
-  push:
-    tags:
-      - 'v1.2.3'
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source branch or tag to build'
+        required: true
+        default: 'production-1.2.2-work-20261109'
+        type: string
+      release_tag:
+        description: 'Existing release tag'
+        required: true
+        default: 'v1.2.3'
+        type: string
 
 permissions:
   contents: write
@@ -13,8 +22,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout tagged source
+      - name: Checkout release source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
 
       - name: Validate release version
         shell: bash
@@ -23,7 +34,7 @@ jobs:
           grep -Eq 'versionCode[[:space:]]+15' android/app/build.gradle
           grep -Fq 'versionName "1.2.3"' android/app/build.gradle
           grep -Fq "applicationIdSuffix '.customer'" android/app/build.gradle
-          test "$GITHUB_REF_NAME" = "v1.2.3"
+          test "${{ inputs.release_tag }}" = "v1.2.3"
 
       - name: Prepare embedded Node runtime
         run: bash scripts/prepare-node-mobile-runtime.sh
@@ -124,7 +135,7 @@ jobs:
       - name: Publish official release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2.3
+          tag_name: ${{ inputs.release_tag }}
           name: cash.pro.S.M.G.R 1.2.3 - Owner + Customer
           body: |
             Official NRS Cash Pro 1.2.3 release.
@@ -147,3 +158,4 @@ jobs:
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
