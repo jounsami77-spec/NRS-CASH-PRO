@@ -1,0 +1,149 @@
+name: NRS Cash Pro Official Release 1.2.3
+
+on:
+  push:
+    tags:
+      - 'v1.2.3'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eq 'versionCode[[:space:]]+15' android/app/build.gradle
+          grep -Fq 'versionName "1.2.3"' android/app/build.gradle
+          grep -Fq "applicationIdSuffix '.customer'" android/app/build.gradle
+          test "$GITHUB_REF_NAME" = "v1.2.3"
+
+      - name: Prepare embedded Node runtime
+        run: bash scripts/prepare-node-mobile-runtime.sh
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          test -n "$SDK_ROOT"
+          SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_ROOT/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
+          test -x "$SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Restore permanent signing key
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
+          mkdir -p android/app
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release-key.jks
+          test -s android/app/release-key.jks
+          chmod 600 android/app/release-key.jks
+          keytool -list \
+            -keystore android/app/release-key.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
+      - name: Build Owner and Customer Release APKs
+        run: |
+          set -euo pipefail
+          gradle --no-daemon -p android \
+            :app:assembleOwnerRelease \
+            :app:assembleCustomerRelease
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Verify both APKs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          OWNER="android/app/build/outputs/apk/owner/release/app-owner-release.apk"
+          CUSTOMER="android/app/build/outputs/apk/customer/release/app-customer-release.apk"
+
+          test -s "$OWNER"
+          test -s "$CUSTOMER"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$APKSIGNER" verify --verbose --print-certs "$OWNER"
+          "$APKSIGNER" verify --verbose --print-certs "$CUSTOMER"
+
+          OWNER_INFO="$("$AAPT" dump badging "$OWNER")"
+          CUSTOMER_INFO="$("$AAPT" dump badging "$CUSTOMER")"
+
+          echo "$OWNER_INFO" | grep -F "package: name='dz.nrs.cashpro' versionCode='15' versionName='1.2.3'"
+          echo "$CUSTOMER_INFO" | grep -F "package: name='dz.nrs.cashpro.customer' versionCode='15' versionName='1.2.3'"
+
+          mkdir -p official-release
+          cp "$OWNER" official-release/cash.pro.S.M.G.R-Owner-1.2.3.apk
+          cp "$CUSTOMER" official-release/cash.pro.S.M.G.R-Customer-1.2.3.apk
+
+          sha256sum official-release/*.apk
+
+      - name: Publish official release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.2.3
+          name: cash.pro.S.M.G.R 1.2.3 - Owner + Customer
+          body: |
+            Official NRS Cash Pro 1.2.3 release.
+
+            Owner:
+            Package: dz.nrs.cashpro
+
+            Customer:
+            Package: dz.nrs.cashpro.customer
+
+            Version code: 15
+            Version name: 1.2.3
+            Architecture: arm64-v8a
+
+            Both APKs are Release builds signed with the permanent application key.
+          files: |
+            official-release/cash.pro.S.M.G.R-Owner-1.2.3.apk
+            official-release/cash.pro.S.M.G.R-Customer-1.2.3.apk
+          fail_on_unmatched_files: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
