@@ -989,6 +989,16 @@ export default {
         return await createStore(request, env);
       }
 
+      const pairingIssueMatch = path.match(
+        /^\/v1\/admin\/stores\/([^/]+)\/pairing-code$/i
+      );
+
+      if (request.method === "POST" && pairingIssueMatch) {
+        return await issueStorePairing(
+          request, env, pairingIssueMatch[1]
+        );
+      }
+
       const deviceListMatch = path.match(
         /^\/v1\/admin\/stores\/([^/]+)\/devices$/i
       );
