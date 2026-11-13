@@ -525,6 +525,8 @@ html, body {
 #nrsPullRefreshIndicator.busy { opacity: .9; }
 /* END NRS_PRO_REFRESH_AND_DAILY_CLOSE_V1 */
 
+
+[hidden]{display:none!important}
 </style>
 <script src="/vendor/zxing-browser-0.1.5.min.js"></script>
 <script src="/vendor/jsbarcode-3.11.6.all.min.js"></script>
@@ -798,6 +800,7 @@ function applyTheme(name){
 }
 document.querySelectorAll('.navbtn').forEach(b=>b.addEventListener('click',()=>{
  const page=b.dataset.page;
+ if(page==='settings') loadOwnerCustomerPanel();
  document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id==='page-'+page));
  document.querySelectorAll('.navbtn').forEach(x=>x.classList.toggle('active',x===b));
  if(page==='cashier'){
@@ -866,14 +869,24 @@ $('ownerCloudEnroll')?.addEventListener('click',async()=>{
 $('ownerCloudRefresh')?.addEventListener('click',refreshOwnerCloudPairing);
 
 async function loadOwnerCustomerPanel(){
+ const panel=$('ownerCloudPairingPanel');
+ const status=$('ownerCloudPairingStatus');
+ const customerPanel=$('ownerCustomerPanel');
  try{
-  const info=await request('/api/status');
-  if(info.edition==='owner'){
-   if($('ownerCustomerPanel')) $('ownerCustomerPanel').hidden=false;
-   if($('ownerCloudPairingPanel')) $('ownerCloudPairingPanel').hidden=false;
+  const info=await request('/api/status',{cache:'no-store'});
+  const isOwner=String(info.edition||'').trim().toLowerCase()==='owner';
+  if(panel) panel.hidden=!isOwner;
+  if(customerPanel) customerPanel.hidden=!isOwner;
+  if(isOwner){
+   if(status) status.textContent='جاري تحميل حالة ربط المتجر...';
    await refreshOwnerCloudPairing();
+  }else{
+   if(status) status.textContent='ربط السحابة متاح في نسخة Owner فقط.';
   }
- }catch(e){}
+ }catch(e){
+  if(status) status.textContent='تعذر تحميل لوحة الربط: '+(e.message||'خطأ غير معروف');
+  console.error('NRS cloud pairing panel:',e);
+ }
 }
 $('createCustomerAccount')?.addEventListener('click',async()=>{
  const status=$('ownerCustomerStatus');

@@ -127,10 +127,10 @@ jobs:
           echo "$BADGING" | head -5
 
           echo "$BADGING" |
-            grep -F "package: name='dz.nrs.cashpro' versionCode='16' versionName='1.2.4'"
+            grep -F "package: name='dz.nrs.cashpro' versionCode='17' versionName='1.2.5'"
 
           mkdir -p test-release
-          cp "$APK" test-release/cash.pro.S.M.G.R-1.2.4-OWNER-TEST.apk
+          cp "$APK" test-release/cash.pro.S.M.G.R-1.2.5-OWNER-TEST.apk
 
           sha256sum test-release/*.apk
 
@@ -157,10 +157,10 @@ jobs:
           echo "$BADGING" | head -5
 
           echo "$BADGING" |
-            grep -F "package: name='dz.nrs.cashpro.customer' versionCode='16' versionName='1.2.4'"
+            grep -F "package: name='dz.nrs.cashpro.customer' versionCode='17' versionName='1.2.5'"
 
           mkdir -p test-release
-          cp "$APK" test-release/cash.pro-Customer-1.2.4-TEST.apk
+          cp "$APK" test-release/cash.pro-Customer-1.2.5-TEST.apk
 
           sha256sum test-release/*.apk
 
@@ -168,7 +168,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nrs-cash-pro-owner-release
-          path: test-release/cash.pro.S.M.G.R-1.2.4-OWNER-TEST.apk
+          path: test-release/cash.pro.S.M.G.R-1.2.5-OWNER-TEST.apk
           if-no-files-found: error
           retention-days: 14
 
@@ -176,7 +176,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nrs-cash-pro-customer-release
-          path: test-release/cash.pro-Customer-1.2.4-TEST.apk
+          path: test-release/cash.pro-Customer-1.2.5-TEST.apk
           if-no-files-found: error
           retention-days: 14
 
