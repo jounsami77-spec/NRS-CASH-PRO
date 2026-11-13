@@ -1,0 +1,55 @@
+name: Create encrypted cloud-store pairing
+on:
+  workflow_dispatch:
+    inputs:
+      store_name:
+        description: Exact Owner store name
+        required: true
+        type: string
+      public_key_b64:
+        description: Base64 RSA public key
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  create-pairing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Create store and encrypt pairing code
+        shell: bash
+        env:
+          STORE_NAME: ${{ inputs.store_name }}
+          PUBLIC_KEY_B64: ${{ inputs.public_key_b64 }}
+          WORKER_ADMIN_SECRET: ${{ secrets.ADMIN_BOOTSTRAP_SECRET }}
+        run: |
+          set -Eeuo pipefail
+          set +x
+          test -n "${WORKER_ADMIN_SECRET:-}"
+          printf '%s' "$PUBLIC_KEY_B64" | base64 -d > public.pem
+          openssl pkey -pubin -in public.pem -noout
+          jq -n --arg name "$STORE_NAME" '{store_name:$name}' > request.json
+          code="$(curl --silent --show-error --output response.json --write-out '%{http_code}' --request POST 'https://nrs-cash-pro-sync.jounsami77.workers.dev/v1/admin/stores' --header "Authorization: Bearer ${WORKER_ADMIN_SECRET}" --header 'Content-Type: application/json' --data-binary @request.json)"
+          if [ "$code" != "201" ]; then
+            echo "::error::Store creation failed; response hidden"
+            exit 1
+          fi
+          jq -e '.ok == true and (.pairing_code|type == "string") and (.store_id|type == "string")' response.json >/dev/null
+          jq -r '.pairing_code' response.json > pairing-code.txt
+          openssl pkeyutl -encrypt -pubin -inkey public.pem -in pairing-code.txt -out pairing.enc -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          jq '{store_name,store_id,expires_in_seconds}' response.json > metadata.json
+          mkdir -p encrypted-pairing
+          mv pairing.enc encrypted-pairing/
+          mv metadata.json encrypted-pairing/
+          rm -f response.json pairing-code.txt request.json public.pem
+          echo "Store created; pairing code encrypted."
+      - name: Upload encrypted pairing
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrs-pairing-Sb-encrypted
+          path: encrypted-pairing/
+          retention-days: 1
+          if-no-files-found: error
