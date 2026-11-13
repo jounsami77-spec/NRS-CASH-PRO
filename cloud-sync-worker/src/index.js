@@ -206,6 +206,53 @@ async function createStore(request, env) {
 }
 
 
+
+// Issue a fresh pairing code for an existing store only.
+async function issueStorePairing(request, env, storeId) {
+  if (!await requireAdmin(request, env)) {
+    return fail("غير مصرح", 401);
+  }
+
+  if (!validUuid(storeId)) {
+    return fail("معرف المتجر غير صالح");
+  }
+
+  const store = await env.DB.prepare(
+    "SELECT id, name FROM stores WHERE id = ?"
+  ).bind(storeId).first();
+
+  if (!store) {
+    return fail("المتجر غير موجود", 404);
+  }
+
+  const pairingCode = randomToken(24);
+  const codeHash = await sha256(pairingCode);
+  const now = new Date().toISOString();
+  const expires = Date.now() + 15 * 60 * 1000;
+
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE pairing_codes
+       SET used_at = ?
+       WHERE store_id = ? AND used_at IS NULL`
+    ).bind(Date.now(), storeId),
+
+    env.DB.prepare(
+      `INSERT INTO pairing_codes
+       (code_hash, store_id, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`
+    ).bind(codeHash, storeId, expires, now)
+  ]);
+
+  return response({
+    ok: true,
+    store_id: store.id,
+    store_name: store.name,
+    pairing_code: pairingCode,
+    expires_in_seconds: 900
+  }, 201);
+}
+
 async function listStoreDevices(request, env, storeId) {
   if (!validUuid(storeId)) {
     return fail("معرف المتجر غير صالح");
