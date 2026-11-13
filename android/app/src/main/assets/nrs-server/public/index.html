@@ -543,6 +543,11 @@ html, body {
  <form id="dzLoginForm">
   <label>اسم المستخدم</label><input id="dzUsername" autocomplete="username" required>
   <label>كلمة المرور</label><input id="dzPassword" type="password" autocomplete="current-password" required>
+  <div id="customerWorkerBox" hidden>
+   <label>عنوان Worker لأول تفعيل</label>
+   <input id="customerWorkerUrl" type="url" inputmode="url" placeholder="https://اسم-الخادم.workers.dev">
+   <p class="small-note">بعد التفعيل الأول يمكنك الدخول محلياً دون إنترنت.</p>
+  </div>
   <button type="submit">دخول إلى الكاشير</button>
  </form>
 <div id="generalAdminLogin" style="margin-top:12px;text-align:center">
@@ -559,6 +564,8 @@ fetch('/api/status').then(r=>r.json()).then(info=>{
  if(info.edition==='customer'){
   const admin=document.getElementById('generalAdminLogin');
   if(admin) admin.hidden=true;
+  const workerBox=document.getElementById('customerWorkerBox');
+  if(workerBox) workerBox.hidden=false;
   const note=document.createElement('p');
   note.textContent='نسخة الزبون: يلزم ربط حسابك بخادم الإدارة قبل تسجيل الدخول. لا تستخدم بيانات مدير النظام هنا.';
   note.style.cssText='margin:12px 0;padding:12px;border:1px solid #c99;border-radius:10px;line-height:1.8';
@@ -698,6 +705,31 @@ fetch('/api/status').then(r=>r.json()).then(info=>{
     </div>
     <button id="saveSettings" style="width:100%">حفظ الإعدادات</button><div id="settingsStatus" class="status"></div>
   </div>
+
+  <div class="panel" id="ownerCloudPairingPanel" hidden>
+    <h2>☁️ ربط جهاز المالك بالسحابة</h2>
+    <p class="small-note">أدخل عنوان Cloudflare Worker ورمز الاقتران الصادر من الإدارة لربط هذا المحل.</p>
+    <label for="ownerCloudWorkerUrl">عنوان Worker</label>
+    <input id="ownerCloudWorkerUrl" type="url" inputmode="url" placeholder="https://اسم-الخادم.workers.dev" autocomplete="url">
+    <label for="ownerCloudPairingCode">رمز الاقتران</label>
+    <input id="ownerCloudPairingCode" type="password" autocomplete="off" placeholder="ألصق رمز الاقتران هنا">
+    <label for="ownerCloudDeviceName">اسم الجهاز</label>
+    <input id="ownerCloudDeviceName" type="text" maxlength="80" value="NRS Owner Android">
+    <button id="ownerCloudEnroll" type="button" style="width:100%;margin-top:10px">ربط هذا الجهاز</button>
+    <button id="ownerCloudRefresh" type="button" style="width:100%;margin-top:8px">تحديث حالة الربط</button>
+    <div id="ownerCloudPairingStatus" class="status"></div>
+  </div>
+
+  <div class="panel" id="ownerCustomerPanel" hidden>
+    <h2>☁️ حساب جهاز الزبون</h2>
+    <p class="small-note">يجب إقران جهاز Owner بالسحابة أولاً.</p>
+    <label>اسم مستخدم الزبون</label>
+    <input id="ownerCustomerUsername" autocomplete="off" placeholder="customer01">
+    <label>كلمة مرور الزبون (8 أحرف على الأقل)</label>
+    <input id="ownerCustomerPassword" type="password" autocomplete="new-password">
+    <button id="createCustomerAccount" type="button" style="width:100%;margin-top:10px">إنشاء حساب الزبون</button>
+    <div id="ownerCustomerStatus" class="status"></div>
+  </div>
   <div class="panel">
     <h2>👤 حساب المسؤول</h2>
     <p class="small-note">يمكنك تخصيص اسم المسؤول الظاهر في واجهة المحل. هذه النسخة تحفظ ملف المحل محليًا في قاعدة البيانات؛ حقل اسم المسؤول ليس نظام تسجيل دخول أو حماية بكلمة مرور.</p>
@@ -794,6 +826,71 @@ async function loadSettings(){
   $('accountLabel').textContent=settings.manager||'مدير المحل';
  }catch(e){msg('settingsStatus','تعذر تحميل الإعدادات: '+e.message)}
 }
+
+async function refreshOwnerCloudPairing(){
+ const status=$('ownerCloudPairingStatus');
+ if(!status) return;
+ try{
+  const info=await request('/api/cloud-sync/status');
+  if(info.paired){
+   status.textContent='الجهاز مرتبط بالسحابة. معرّف المتجر: '+info.cloudStoreId+
+    ' | مؤشر المزامنة: '+info.pullCursor;
+  }else{
+   status.textContent='هذا الجهاز غير مرتبط بالسحابة بعد.';
+  }
+ }catch(e){
+  status.textContent='تعذر قراءة حالة الربط: '+e.message;
+ }
+}
+
+$('ownerCloudEnroll')?.addEventListener('click',async()=>{
+ const status=$('ownerCloudPairingStatus');
+ status.textContent='جارٍ ربط الجهاز...';
+ try{
+  const result=await request('/api/cloud-sync/enroll',{
+   method:'POST',
+   body:JSON.stringify({
+    workerUrl:$('ownerCloudWorkerUrl').value.trim(),
+    pairingCode:$('ownerCloudPairingCode').value.trim(),
+    deviceName:$('ownerCloudDeviceName').value.trim()||'NRS Owner Android'
+   })
+  });
+  $('ownerCloudPairingCode').value='';
+  status.textContent=result.message||'تم ربط الجهاز بنجاح.';
+  await refreshOwnerCloudPairing();
+ }catch(e){
+  status.textContent='فشل الربط: '+e.message;
+ }
+});
+
+$('ownerCloudRefresh')?.addEventListener('click',refreshOwnerCloudPairing);
+
+async function loadOwnerCustomerPanel(){
+ try{
+  const info=await request('/api/status');
+  if(info.edition==='owner'){
+   if($('ownerCustomerPanel')) $('ownerCustomerPanel').hidden=false;
+   if($('ownerCloudPairingPanel')) $('ownerCloudPairingPanel').hidden=false;
+   await refreshOwnerCloudPairing();
+  }
+ }catch(e){}
+}
+$('createCustomerAccount')?.addEventListener('click',async()=>{
+ const status=$('ownerCustomerStatus');
+ status.textContent='جارٍ إنشاء حساب الزبون...';
+ try{
+  const out=await request('/api/cloud-sync/customer-account',{
+   method:'POST',
+   body:JSON.stringify({
+    username:$('ownerCustomerUsername').value.trim(),
+    password:$('ownerCustomerPassword').value
+   })
+  });
+  $('ownerCustomerPassword').value='';
+  status.textContent='تم إنشاء حساب الزبون: '+out.username;
+ }catch(e){status.textContent='تعذر الإنشاء: '+e.message}
+});
+
 $('saveSettings').onclick=async()=>{
  try{
   const data={
@@ -1766,12 +1863,16 @@ async function startCashier(){
   b.style.margin='8px';b.onclick=async()=>{try{await request('/api/logout',{method:'POST'});}finally{location.reload()}};
   document.querySelector('header .topline')?.appendChild(b);
  }
- await loadSettings();await loadProducts();await loadSales();
+ await loadSettings();await loadOwnerCustomerPanel();await loadProducts();await loadSales();
 }
 $('dzLoginForm').onsubmit=async e=>{
  e.preventDefault();$('dzLoginStatus').textContent='جارٍ تسجيل الدخول...';
  try{
-  const d=await request('/api/login',{method:'POST',body:JSON.stringify({username:$('dzUsername').value.trim(),password:$('dzPassword').value})});
+  const d=await request('/api/login',{method:'POST',body:JSON.stringify({
+   username:$('dzUsername').value.trim(),
+   password:$('dzPassword').value,
+   workerUrl:$('customerWorkerUrl')?.value.trim() || ''
+  })});
   if(d.user.role==='super_admin'){location.href='/admin';return}
   await startCashier();
  }catch(err){$('dzLoginStatus').textContent=err.message}

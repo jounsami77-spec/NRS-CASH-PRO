@@ -773,6 +773,203 @@ async function syncStatus(env, device) {
   });
 }
 
+
+// NRS_CUSTOMER_ACCOUNT_AUTH_V1
+const NRS_CUSTOMER_PBKDF2_ITERATIONS = 210000;
+
+function nrsCustomerHex(bytes) {
+  return [...new Uint8Array(bytes)]
+    .map(x => x.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function nrsCustomerBytes(hex) {
+  if (typeof hex !== "string" || !/^(?:[0-9a-f]{2})+$/i.test(hex)) {
+    throw new Error("بيانات التحقق غير صالحة");
+  }
+  return new Uint8Array(hex.match(/.{2}/g).map(x => parseInt(x, 16)));
+}
+
+async function nrsCustomerPasswordHash(password, saltHex, iterations) {
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"]
+  );
+
+  const bits = await crypto.subtle.deriveBits({
+    name: "PBKDF2",
+    hash: "SHA-256",
+    salt: nrsCustomerBytes(saltHex),
+    iterations
+  }, material, 256);
+
+  return nrsCustomerHex(bits);
+}
+
+function nrsCustomerEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) {
+    return false;
+  }
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function nrsCustomerProvision(request, env, device) {
+  const token = bearer(request);
+  if (!token) return fail("رمز الجهاز غير صالح", 401);
+
+  const tokenHash = await sha256(token);
+
+  // رموز Customer لا تملك صلاحية إنشاء أو تغيير حسابات Customer.
+  const customerDevice = await env.DB.prepare(
+    "SELECT device_id FROM nrs_customer_device_tokens WHERE token_hash = ?"
+  ).bind(tokenHash).first();
+
+  if (customerDevice) {
+    return fail("هذه العملية متاحة لجهاز Owner فقط", 403);
+  }
+
+  const data = await readJson(request);
+  const username = String(data.username || "").trim().toLowerCase();
+  const password = String(data.password || "");
+
+  if (!/^[a-z0-9._-]{3,40}$/.test(username)) {
+    return fail("اسم المستخدم يجب أن يكون 3 إلى 40 حرفاً إنجليزياً أو رقماً", 400);
+  }
+
+  if (password.length < 8 || password.length > 128) {
+    return fail("كلمة المرور يجب أن تكون بين 8 و128 حرفاً", 400);
+  }
+
+  const store = await env.DB.prepare(
+    "SELECT id FROM stores WHERE id = ?"
+  ).bind(device.store_id).first();
+
+  if (!store) return fail("المحل المرتبط بالجهاز غير موجود", 404);
+
+  const existing = await env.DB.prepare(
+    "SELECT id, store_id FROM nrs_customer_accounts WHERE username = ?"
+  ).bind(username).first();
+
+  if (existing) {
+    return fail(
+      existing.store_id === device.store_id
+       ? "اسم المستخدم موجود بالفعل في هذا المحل. لم يتم تغيير كلمة المرور."
+       : "اسم المستخدم مستخدم في محل آخر",
+      409
+    );
+  }
+
+  const salt = nrsCustomerHex(crypto.getRandomValues(new Uint8Array(16)));
+  const hash = await nrsCustomerPasswordHash(
+    password, salt, NRS_CUSTOMER_PBKDF2_ITERATIONS
+  );
+  const now = new Date().toISOString();
+
+  try {
+    await env.DB.prepare(`
+      INSERT INTO nrs_customer_accounts
+        (id, store_id, username, password_salt, password_hash,
+         iterations, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    `).bind(
+      crypto.randomUUID(), device.store_id, username, salt, hash,
+      NRS_CUSTOMER_PBKDF2_ITERATIONS, now, now
+    ).run();
+  } catch (error) {
+    // قد ينشئ Owner آخر الاسم نفسه بعد الفحص وقبل INSERT.
+    // نعالج تعارض username فقط، ونترك أخطاء D1 الأخرى تظهر كأخطاء حقيقية.
+    const message = String(error && error.message || error);
+    if (/UNIQUE constraint failed:\s*(?:nrs_customer_accounts\.)?username/i.test(message)) {
+      return fail("اسم المستخدم مستخدم بالفعل. لم يتم إنشاء الحساب.", 409);
+    }
+    throw error;
+  }
+
+  return response({ ok: true, username });
+}
+
+async function nrsCustomerLogin(request, env) {
+  const data = await readJson(request);
+  const username = String(data.username || "").trim().toLowerCase();
+  const password = String(data.password || "");
+
+  if (!/^[a-z0-9._-]{3,40}$/.test(username) ||
+      password.length < 1 || password.length > 128) {
+    return fail("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
+  }
+
+  const account = await env.DB.prepare(`
+    SELECT a.id, a.store_id, a.username, a.password_salt,
+           a.password_hash, a.iterations, a.active,
+           s.name AS store_name
+    FROM nrs_customer_accounts a
+    JOIN stores s ON s.id = a.store_id
+    WHERE a.username = ?
+    LIMIT 1
+  `).bind(username).first();
+
+  if (!account || Number(account.active) !== 1) {
+    return fail("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
+  }
+
+  const iterations = Number(account.iterations);
+  if (!Number.isInteger(iterations) || iterations < 100000 ||
+      iterations > 1000000) {
+    return fail("تعذر التحقق من الحساب", 500);
+  }
+
+  const calculated = await nrsCustomerPasswordHash(
+    password, account.password_salt, iterations
+  );
+
+  if (!nrsCustomerEqual(calculated, account.password_hash)) {
+    return fail("اسم المستخدم أو كلمة المرور غير صحيحة", 401);
+  }
+
+  const deviceToken = randomToken();
+  const deviceId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const tokenHash = await sha256(deviceToken);
+  const deviceName = String(data.device_name || "NRS Customer").trim().slice(0, 80);
+
+  // NRS_CUSTOMER_LOGIN_ATOMIC_V1
+  // D1 batch commits both inserts together or rolls both back.
+  const deviceInsert = env.DB.prepare(`
+    INSERT INTO devices
+      (id, store_id, name, token_hash, created_at, last_seen_at, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, NULL)
+  `).bind(
+    deviceId, account.store_id, deviceName || "NRS Customer",
+    tokenHash, now, now
+  );
+
+  const customerTokenInsert = env.DB.prepare(`
+    INSERT INTO nrs_customer_device_tokens (device_id, token_hash, created_at)
+    VALUES (?, ?, ?)
+  `).bind(deviceId, tokenHash, now);
+
+  await env.DB.batch([deviceInsert, customerTokenInsert]);
+  // END NRS_CUSTOMER_LOGIN_ATOMIC_V1
+
+  return response({
+    ok: true,
+    store_id: account.store_id,
+    store_name: account.store_name,
+    username: account.username,
+    device_id: deviceId,
+    device_token: deviceToken
+  });
+}
+// END NRS_CUSTOMER_ACCOUNT_AUTH_V1
+
+
 export default {
   async fetch(request, env) {
     try {
@@ -826,6 +1023,18 @@ export default {
       if (request.method === "POST" &&
           path === "/v1/device/enroll") {
         return await enrollDevice(request, env);
+      }
+
+      if (request.method === "POST" &&
+          path === "/v1/customer/login") {
+        return await nrsCustomerLogin(request, env);
+      }
+
+      if (request.method === "POST" &&
+          path === "/v1/owner/customer-account") {
+        const device = await requireDevice(request, env);
+        if (!device) return fail("رمز الجهاز غير صحيح أو ملغى", 401);
+        return await nrsCustomerProvision(request, env, device);
       }
 
       if (path.startsWith("/v1/sync/")) {

@@ -151,6 +151,7 @@ CREATE INDEX IF NOT EXISTS idx_sales_customer_phone
 
 addColumn('stores', 'sync_uuid', 'TEXT');
 addColumn('stores', 'cloud_store_id', 'TEXT');
+addColumn('users', 'remote_username', 'TEXT');
 
 addColumn('products', 'sync_uuid', 'TEXT');
 addColumn('sales', 'sync_uuid', 'TEXT');
@@ -569,7 +570,7 @@ function sessionUser(req) {
  const token = cookieToken(req);
  if (!token) return null;
  const row = db.prepare(`
-  SELECT u.id,u.store_id,u.username,u.role,u.active,
+  SELECT u.id,u.store_id,u.username,u.remote_username,u.role,u.active,
          s.status AS store_status,
          se.expires_at AS session_expires
   FROM sessions se JOIN users u ON u.id=se.user_id
@@ -596,7 +597,7 @@ function trialExpired(storeId) {
 function publicUser(user) {
  if (!user) return null;
  return {
-  id:user.id,username:user.username,role:user.role,storeId:user.store_id,
+  id:user.id,username:user.remote_username || user.username,role:user.role,storeId:user.store_id,
   storeName:user.store_id ? db.prepare('SELECT name FROM stores WHERE id=?').get(user.store_id)?.name : 'DZVORA ADMIN',
   subscription:user.store_id ? subInfo(user.store_id) : null
  };
@@ -1095,6 +1096,93 @@ async function nrsRunCloudSync(storeId) {
 }
 /* END NRS_CLOUD_SYNC_ENGINE_V2 */
 
+
+async function nrsActivateCustomerAccount(data) {
+ const workerUrl=String(data.workerUrl||'').trim().replace(/\/+$/,'');
+ const username=String(data.username||'').trim().toLowerCase();
+ const password=String(data.password||'');
+
+ if(!workerUrl) throw new Error('أدخل عنوان Worker لأول تفعيل');
+ let parsed;
+ try { parsed=new URL(workerUrl); }
+ catch { throw new Error('عنوان Worker غير صالح'); }
+
+ if(parsed.protocol!=='https:' || parsed.username || parsed.password ||
+    parsed.search || parsed.hash || parsed.pathname!=='/' ||
+    parsed.hostname==='localhost' || parsed.hostname.endsWith('.local'))
+  throw new Error('يجب إدخال عنوان HTTPS صحيح لـ Cloudflare Worker');
+
+ if(!/^[a-z0-9._-]{3,40}$/.test(username))
+  throw new Error('اسم المستخدم غير صالح');
+ if(!password || password.length>128)
+  throw new Error('كلمة المرور غير صالحة');
+
+ const response=await fetch(workerUrl+'/v1/customer/login',{
+  method:'POST',
+  headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({username,password,device_name:'NRS Customer Android'}),
+  signal:AbortSignal.timeout(25000)
+ });
+ let result={};
+ try { result=await response.json(); } catch {}
+ if(!response.ok || !result.ok || !result.store_id ||
+    !result.device_id || !result.device_token)
+  throw new Error(String(result.error||'فشل تفعيل حساب الزبون').slice(0,250));
+
+ const cloudStoreId=String(result.store_id);
+ const deviceId=String(result.device_id);
+ const deviceToken=String(result.device_token);
+ const storeName=String(result.store_name||'المحل').slice(0,120);
+ const remoteUsername=String(result.username||username).toLowerCase();
+
+ if(!/^[a-z0-9._-]{3,40}$/.test(remoteUsername))
+  throw new Error('اسم المستخدم في استجابة Worker غير صالح');
+
+ const internalUsername='nrs_customer_'+cloudStoreId.replace(/[^a-zA-Z0-9]/g,'').slice(0,48);
+ const now=new Date();
+ const start=now.toISOString();
+ const end=new Date(now.getTime()+7*24*60*60*1000).toISOString();
+ const localHash=passwordHash(password);
+
+ db.exec('BEGIN IMMEDIATE');
+ try {
+  const existing=db.prepare(
+   'SELECT id FROM users WHERE username=? OR remote_username=?'
+  ).get(internalUsername,remoteUsername);
+  if(existing) throw new Error('يوجد حساب محلي متعارض؛ لم يتم تغيير أي بيانات');
+
+  const st=db.prepare(`
+   INSERT INTO stores(name,status,sync_uuid,cloud_store_id)
+   VALUES(?,'active',?,?)
+  `).run(storeName,crypto.randomUUID(),cloudStoreId);
+  const storeId=Number(st.lastInsertRowid);
+
+  const ur=db.prepare(`
+   INSERT INTO users(store_id,username,remote_username,password_hash,role,active)
+   VALUES(?,?,?,?, 'cashier',1)
+  `).run(storeId,internalUsername,remoteUsername,localHash);
+  const userId=Number(ur.lastInsertRowid);
+
+  db.prepare(`
+   INSERT INTO subscriptions(store_id,plan,status,starts_at,expires_at)
+   VALUES(?,'monthly','active',?,?)
+  `).run(storeId,start,end);
+
+  db.prepare(`
+   INSERT INTO sync_state(
+    store_id,cloud_store_id,device_id,device_token,cloud_url,
+    pull_cursor,last_sync_at,last_error,updated_at
+   ) VALUES(?,?,?,?,?,0,NULL,NULL,CURRENT_TIMESTAMP)
+  `).run(storeId,cloudStoreId,deviceId,deviceToken,workerUrl);
+
+  db.exec('COMMIT');
+  return db.prepare('SELECT * FROM users WHERE id=?').get(userId);
+ } catch(e) {
+  try { db.exec('ROLLBACK'); } catch {}
+  throw e;
+ }
+}
+
 async function api(req,res,url) {
  const p = url.pathname;
  if (process.env.NRS_APP_EDITION === 'customer' && p.startsWith('/api/admin/'))
@@ -1110,7 +1198,18 @@ async function api(req,res,url) {
    const username=String(data.username||'').trim();
    const password=String(data.password||'');
    if (!username || !password) return send(res,400,{error:'أدخل اسم المستخدم وكلمة المرور'});
-   const user=db.prepare('SELECT * FROM users WHERE username=?').get(username);
+   let user=db.prepare(
+    'SELECT * FROM users WHERE username=? OR remote_username=? LIMIT 1'
+   ).get(username,username);
+
+   if (!user && process.env.NRS_APP_EDITION === 'customer') {
+    try {
+     user=await nrsActivateCustomerAccount(data);
+    } catch(e) {
+     return send(res,401,{error:String(e.message||e)});
+    }
+   }
+
    if (process.env.NRS_APP_EDITION === 'customer' && user?.role === 'super_admin')
     return send(res,403,{error:'حساب الإدارة غير مسموح في نسخة الزبون'});
    if (!user || !user.active || !verifyPassword(password,user.password_hash))
@@ -1343,6 +1442,45 @@ async function api(req,res,url) {
  }
  const storeId=user.store_id;
 
+ if (p === '/api/cloud-sync/customer-account' && req.method === 'POST') {
+  if(process.env.NRS_APP_EDITION==='customer' || user.role!=='store_owner')
+   return send(res,403,{error:'هذه العملية متاحة لمالك المحل من نسخة Owner فقط'});
+  try {
+   const data=await bodyJSON(req);
+   const username=String(data.username||'').trim().toLowerCase();
+   const password=String(data.password||'');
+   if(!/^[a-z0-9._-]{3,40}$/.test(username))
+    return send(res,400,{error:'اسم المستخدم يجب أن يكون 3 إلى 40 حرفاً'});
+   if(password.length<8 || password.length>128)
+    return send(res,400,{error:'كلمة المرور يجب أن تكون بين 8 و128 حرفاً'});
+
+   const state=db.prepare(
+    'SELECT cloud_url,device_token,cloud_store_id FROM sync_state WHERE store_id=?'
+   ).get(storeId);
+   if(!state || !state.cloud_url || !state.device_token || !state.cloud_store_id)
+    return send(res,409,{error:'يجب إقران المحل بالسحابة أولاً'});
+
+   const r=await fetch(state.cloud_url.replace(/\/+$/,'')+'/v1/owner/customer-account',{
+    method:'POST',
+    headers:{
+     'Content-Type':'application/json',
+     'Authorization':'Bearer '+state.device_token
+    },
+    body:JSON.stringify({username,password}),
+    signal:AbortSignal.timeout(25000)
+   });
+   let result={};
+   try { result=await r.json(); } catch {}
+   if(!r.ok || !result.ok)
+    return send(res,r.status>=400 && r.status<500?r.status:502,
+     {error:String(result.error||'تعذر إنشاء حساب الزبون').slice(0,250)});
+   return send(res,200,{ok:true,username:result.username||username});
+  } catch(e) {
+   return send(res,502,{error:String(e.message||e).slice(0,250)});
+  }
+ }
+
+
 
  // NRS_CLOUD_DEVICE_ENROLL_V1
 
@@ -1530,6 +1668,8 @@ async function api(req,res,url) {
   return send(res,200,Object.fromEntries(rows.map(x=>[x.key,x.value])));
  }
  if (p==='/api/settings' && req.method==='POST') {
+  if (process.env.NRS_APP_EDITION === 'customer' || user.role !== 'store_owner')
+   return send(res,403,{error:'تعديل إعدادات المحل متاح للمالك فقط'});
   try {
    const d=await bodyJSON(req);
    const allowed=['shopName','phone','address','footer','manager','theme','autoCloseEnabled','autoCloseHours'];

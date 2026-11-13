@@ -95,3 +95,34 @@ WHEN EXISTS (
 BEGIN
     SELECT RAISE(ABORT, 'NRS_EVENT_UUID_CONFLICT');
 END;
+
+
+-- NRS_CUSTOMER_ACCOUNT_AUTH_V1
+-- Separate customer credentials; no plaintext passwords are stored.
+CREATE TABLE IF NOT EXISTS nrs_customer_accounts (
+    id TEXT PRIMARY KEY,
+    store_id TEXT NOT NULL,
+    username TEXT NOT NULL UNIQUE,
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    iterations INTEGER NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(store_id) REFERENCES stores(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nrs_customer_accounts_store
+ON nrs_customer_accounts(store_id, active);
+
+-- Identifies customer-issued device tokens so they cannot provision accounts.
+CREATE TABLE IF NOT EXISTS nrs_customer_device_tokens (
+    device_id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(device_id) REFERENCES devices(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_nrs_customer_device_token_hash
+ON nrs_customer_device_tokens(token_hash);
+-- END NRS_CUSTOMER_ACCOUNT_AUTH_V1

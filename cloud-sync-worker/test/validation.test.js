@@ -1807,3 +1807,719 @@ test("admin revoke immediately blocks device sync access", async () => {
   assert.equal(state.deviceLookups, 1);
   assert.equal(state.statusQueries, 0);
 });
+
+// NRS_CUSTOMER_AUTH_TESTS_V1
+// In-memory D1 mock for the real Worker customer authentication routes.
+const CUSTOMER_TEST_OWNER_TOKEN = "test-owner-token-not-a-secret";
+const CUSTOMER_TEST_OTHER_OWNER_TOKEN = "test-other-owner-token";
+const CUSTOMER_TEST_STORE_B = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+
+function customerTestHash(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function customerAuthTestDb(options = {}) {
+  const stores = new Map([
+    [TEST_STORE, { id: TEST_STORE, name: "Customer Test Store A" }],
+    [CUSTOMER_TEST_STORE_B, {
+      id: CUSTOMER_TEST_STORE_B,
+      name: "Customer Test Store B"
+    }]
+  ]);
+
+  const devicesByHash = new Map();
+  const customerTokens = new Map();
+  const accounts = new Map();
+  const calls = {
+    accountInserts: 0,
+    deviceInserts: 0,
+    customerTokenInserts: 0
+  };
+
+  function addOwner(token, storeId, id) {
+    devicesByHash.set(customerTestHash(token), {
+      id,
+      store_id: storeId,
+      name: "Test Owner",
+      revoked_at: null
+    });
+  }
+
+  addOwner(CUSTOMER_TEST_OWNER_TOKEN, TEST_STORE, TEST_DEVICE);
+  addOwner(
+    CUSTOMER_TEST_OTHER_OWNER_TOKEN,
+    CUSTOMER_TEST_STORE_B,
+    OTHER_DEVICE
+  );
+
+  const DB = {
+    calls,
+    stores,
+    accounts,
+    devicesByHash,
+    customerTokens,
+
+    // NRS_CUSTOMER_ATOMIC_TEST_MOCK_V1
+    async batch(statements) {
+      const deviceSnapshot = new Map(
+        [...devicesByHash].map(([k, v]) => [k, { ...v }])
+      );
+      const tokenSnapshot = new Map(customerTokens);
+      const callSnapshot = { ...calls };
+
+      try {
+        const results = [];
+        for (const statement of statements) {
+          results.push(await statement.run());
+        }
+        return results;
+      } catch (error) {
+        devicesByHash.clear();
+        for (const [k, v] of deviceSnapshot) devicesByHash.set(k, v);
+
+        customerTokens.clear();
+        for (const [k, v] of tokenSnapshot) customerTokens.set(k, v);
+
+        Object.assign(calls, callSnapshot);
+        throw error;
+      }
+    },
+    // END NRS_CUSTOMER_ATOMIC_TEST_MOCK_V1
+
+    prepare(sql) {
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      const statement = {
+        sql: normalized,
+        values: [],
+
+        bind(...values) {
+          this.values = values;
+          return this;
+        },
+
+        async first() {
+          const v = this.values;
+
+          if (/FROM devices WHERE token_hash = \?/.test(normalized)) {
+            const device = devicesByHash.get(v[0]) || null;
+            return device && !device.revoked_at ? device : null;
+          }
+
+          if (/FROM nrs_customer_device_tokens WHERE token_hash = \?/.test(normalized)) {
+            const deviceId = customerTokens.get(v[0]);
+            return deviceId ? { device_id: deviceId } : null;
+          }
+
+          if (/FROM stores WHERE id = \?/.test(normalized)) {
+            return stores.get(v[0]) || null;
+          }
+
+          if (/FROM nrs_customer_accounts a JOIN stores s/.test(normalized)) {
+            const account = accounts.get(v[0]);
+            if (!account) return null;
+            const store = stores.get(account.store_id);
+            if (!store) return null;
+
+            return {
+              ...account,
+              store_name: store.name
+            };
+          }
+
+          if (/FROM nrs_customer_accounts WHERE username = \?/.test(normalized)) {
+            return accounts.get(v[0]) || null;
+          }
+
+          throw new Error(
+            "Unexpected customer-auth SELECT in test DB: " + normalized
+          );
+        },
+
+        async run() {
+          const v = this.values;
+
+          if (/^INSERT INTO nrs_customer_accounts/.test(normalized)) {
+            const [
+              id, store_id, username, password_salt, password_hash,
+              iterations, created_at, updated_at
+            ] = v;
+
+            if (options.forceAccountUniqueConflict || accounts.has(username)) {
+              throw new Error(
+                "UNIQUE constraint failed: nrs_customer_accounts.username"
+              );
+            }
+
+            accounts.set(username, {
+              id, store_id, username, password_salt, password_hash,
+              iterations, active: 1, created_at, updated_at
+            });
+            calls.accountInserts++;
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO devices/.test(normalized)) {
+            const [
+              id, store_id, name, token_hash, created_at, last_seen_at
+            ] = v;
+
+            devicesByHash.set(token_hash, {
+              id, store_id, name, token_hash, created_at,
+              last_seen_at, revoked_at: null
+            });
+            calls.deviceInserts++;
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO nrs_customer_device_tokens/.test(normalized)) {
+            if (options.failCustomerTokenInsert) {
+              throw new Error("Simulated second D1 insert failure");
+            }
+            const [device_id, token_hash] = v;
+            customerTokens.set(token_hash, device_id);
+            calls.customerTokenInserts++;
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^UPDATE devices SET last_seen_at = \? WHERE id = \?/.test(normalized)) {
+            const [last_seen_at, device_id] = v;
+
+            for (const device of devicesByHash.values()) {
+              if (device.id === device_id) {
+                device.last_seen_at = last_seen_at;
+              }
+            }
+
+            return { meta: { changes: 1 } };
+          }
+
+          throw new Error(
+            "Unexpected customer-auth write in test DB: " + normalized
+          );
+        }
+      };
+
+      return statement;
+    }
+  };
+
+  return DB;
+}
+
+function customerTestRequest(path, body, token) {
+  const headers = { "content-type": "application/json" };
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  return new Request(`https://worker.test${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body)
+  });
+}
+
+test("customer auth: Owner can provision a hashed customer account", async () => {
+  const db = customerAuthTestDb();
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "cashier01", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const result = await response.json();
+  const account = db.accounts.get("cashier01");
+
+  assert.equal(response.status, 200);
+  assert.equal(result.ok, true);
+  assert.equal(result.username, "cashier01");
+  assert.ok(account);
+  assert.notEqual(account.password_hash, "StrongPass123");
+  assert.notEqual(account.password_salt, "StrongPass123");
+  assert.equal(account.password_hash.length, 64);
+  assert.equal(account.password_salt.length, 32);
+  assert.equal(account.iterations, 210000);
+  assert.equal(db.calls.accountInserts, 1);
+});
+
+test("customer auth: username is globally unique across stores", async () => {
+  const db = customerAuthTestDb();
+
+  const first = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "shareduser", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  assert.equal(first.status, 200);
+
+  const second = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "shareduser", password: "AnotherPass123" },
+      CUSTOMER_TEST_OTHER_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const result = await second.json();
+
+  assert.equal(second.status, 409);
+  assert.equal(result.ok, false);
+  assert.equal(db.accounts.get("shareduser").store_id, TEST_STORE);
+  assert.equal(db.calls.accountInserts, 1);
+});
+
+test("customer auth: concurrent username insert conflict returns 409", async () => {
+  const db = customerAuthTestDb({ forceAccountUniqueConflict: true });
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "racinguser", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const result = await response.json();
+
+  assert.equal(response.status, 409);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /اسم المستخدم/);
+  assert.equal(db.accounts.has("racinguser"), false);
+  assert.equal(db.calls.accountInserts, 0);
+});
+
+test("customer auth: revoked Owner device cannot provision a customer account", async () => {
+  const db = customerAuthTestDb();
+  const owner = db.devicesByHash.get(
+    customerTestHash(CUSTOMER_TEST_OWNER_TOKEN)
+  );
+  assert.ok(owner);
+  owner.revoked_at = new Date().toISOString();
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "revokedowner", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const result = await response.json();
+  assert.equal(response.status, 401);
+  assert.equal(result.ok, false);
+  assert.equal(db.accounts.has("revokedowner"), false);
+  assert.equal(db.calls.accountInserts, 0);
+});
+
+test("customer auth: valid login creates a customer device token", async () => {
+  const db = customerAuthTestDb();
+
+  const provision = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "customer01", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+  assert.equal(provision.status, 200);
+
+  const login = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      {
+        username: "CUSTOMER01",
+        password: "StrongPass123",
+        device_name: "Customer Test Phone"
+      }
+    ),
+    { DB: db }
+  );
+
+  const result = await login.json();
+
+  assert.equal(login.status, 200);
+  assert.equal(result.ok, true);
+  assert.equal(result.store_id, TEST_STORE);
+  assert.equal(result.store_name, "Customer Test Store A");
+  assert.equal(result.username, "customer01");
+  assert.ok(result.device_id);
+  assert.ok(result.device_token);
+  assert.equal(db.calls.deviceInserts, 1);
+  assert.equal(db.calls.customerTokenInserts, 1);
+
+  const tokenHash = customerTestHash(result.device_token);
+  assert.equal(db.customerTokens.get(tokenHash), result.device_id);
+  assert.notEqual(tokenHash, result.device_token);
+});
+
+test("customer auth: customer device cannot provision another account", async () => {
+  const db = customerAuthTestDb();
+
+  await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "customer02", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const login = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      { username: "customer02", password: "StrongPass123" }
+    ),
+    { DB: db }
+  );
+
+  const loginResult = await login.json();
+  assert.equal(login.status, 200);
+
+  const attempt = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "nesteduser", password: "AnotherPass123" },
+      loginResult.device_token
+    ),
+    { DB: db }
+  );
+
+  const result = await attempt.json();
+
+  assert.equal(attempt.status, 403);
+  assert.equal(result.ok, false);
+  assert.equal(db.accounts.has("nesteduser"), false);
+});
+
+test("customer auth: wrong password is rejected without creating a device", async () => {
+  const db = customerAuthTestDb();
+
+  await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "customer03", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const before = db.calls.deviceInserts;
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      { username: "customer03", password: "WrongPassword123" }
+    ),
+    { DB: db }
+  );
+
+  const result = await response.json();
+
+  assert.equal(response.status, 401);
+  assert.equal(result.ok, false);
+  assert.equal(db.calls.deviceInserts, before);
+  assert.equal(db.calls.customerTokenInserts, 0);
+});
+
+test("customer auth: inactive account cannot log in", async () => {
+  const db = customerAuthTestDb();
+
+  await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "inactive01", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  db.accounts.get("inactive01").active = 0;
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      { username: "inactive01", password: "StrongPass123" }
+    ),
+    { DB: db }
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(db.calls.deviceInserts, 0);
+});
+
+test("customer auth: device and customer token inserts roll back atomically", async () => {
+  const db = customerAuthTestDb({ failCustomerTokenInsert: true });
+
+  await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "atomicuser", password: "StrongPass123" },
+      CUSTOMER_TEST_OWNER_TOKEN
+    ),
+    { DB: db }
+  );
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      { username: "atomicuser", password: "StrongPass123" }
+    ),
+    { DB: db }
+  );
+
+  assert.ok(response.status >= 500);
+  assert.equal(db.calls.deviceInserts, 0);
+  assert.equal(db.calls.customerTokenInserts, 0);
+  assert.equal(
+    [...db.devicesByHash.values()].filter(d => d.store_id === TEST_STORE).length,
+    1
+  );
+  assert.equal(db.customerTokens.size, 0);
+});
+
+test("customer auth: invalid credentials are rejected", async () => {
+  const db = customerAuthTestDb();
+
+  const response = await worker.fetch(
+    customerTestRequest(
+      "/v1/customer/login",
+      { username: "x", password: "" }
+    ),
+    { DB: db }
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(db.calls.deviceInserts, 0);
+});
+
+// END NRS_CUSTOMER_AUTH_TESTS_V1
+
+// NRS_OWNER_CUSTOMER_END_TO_END_V1
+function ownerCustomerFlowTestDb() {
+  const stores = new Map();
+  const pairings = new Map();
+  const devices = new Map();
+  const customerTokens = new Map();
+  const accounts = new Map();
+
+  const copy = (m) => new Map([...m].map(([k, v]) =>
+    [k, v && typeof v === "object" ? { ...v } : v]));
+
+  const DB = {
+    stores, pairings, devices, customerTokens, accounts,
+
+    async batch(statements) {
+      const snapshots = [stores, pairings, devices, customerTokens, accounts].map(copy);
+      try {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        return results;
+      } catch (error) {
+        [stores, pairings, devices, customerTokens, accounts].forEach((target, i) => {
+          target.clear();
+          for (const [k, v] of snapshots[i]) target.set(k, v);
+        });
+        throw error;
+      }
+    },
+
+    prepare(sql) {
+      const q = sql.replace(/\s+/g, " ").trim();
+      const s = {
+        values: [],
+        bind(...v) { this.values = v; return this; },
+
+        async first() {
+          const v = this.values;
+
+          if (/FROM pairing_codes/.test(q)) {
+            const p = pairings.get(v[0]);
+            return p && p.used_at == null && p.expires_at > v[1]
+              ? { store_id: p.store_id } : null;
+          }
+          if (/FROM devices WHERE token_hash = \?/.test(q)) {
+            const d = devices.get(v[0]);
+            return d && !d.revoked_at ? d : null;
+          }
+          if (/FROM nrs_customer_device_tokens WHERE token_hash = \?/.test(q)) {
+            const id = customerTokens.get(v[0]);
+            return id ? { device_id: id } : null;
+          }
+          if (/FROM stores WHERE id = \?/.test(q)) {
+            const x = stores.get(v[0]);
+            return x ? { id: x.id } : null;
+          }
+          if (/FROM nrs_customer_accounts a JOIN stores s/.test(q)) {
+            const a = accounts.get(v[0]);
+            const store = a && stores.get(a.store_id);
+            return a && store ? { ...a, store_name: store.name } : null;
+          }
+          if (/FROM nrs_customer_accounts WHERE username = \?/.test(q)) {
+            return accounts.get(v[0]) || null;
+          }
+          throw new Error("Unexpected integrated SELECT: " + q);
+        },
+
+        async run() {
+          const v = this.values;
+
+          if (/^INSERT INTO stores /.test(q)) {
+            const [id, name, created_at] = v;
+            stores.set(id, { id, name, created_at });
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO pairing_codes /.test(q)) {
+            const [code_hash, store_id, expires_at, created_at] = v;
+            pairings.set(code_hash, {
+              code_hash, store_id, expires_at, created_at, used_at: null
+            });
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO devices /.test(q) && /SELECT \?, store_id/.test(q)) {
+            const [id, name, token_hash, created_at, last_seen_at, code_hash, now] = v;
+            const p = pairings.get(code_hash);
+            if (!p || p.used_at != null || p.expires_at <= now) {
+              return { meta: { changes: 0 } };
+            }
+            devices.set(token_hash, {
+              id, store_id: p.store_id, name, token_hash,
+              created_at, last_seen_at, revoked_at: null
+            });
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^UPDATE pairing_codes SET used_at = \?/.test(q)) {
+            const [used_at, hash, now] = v;
+            const p = pairings.get(hash);
+            if (!p || p.used_at != null || p.expires_at <= now) {
+              return { meta: { changes: 0 } };
+            }
+            p.used_at = used_at;
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^UPDATE devices SET last_seen_at = \? WHERE id = \?/.test(q)) {
+            const [time, id] = v;
+            for (const d of devices.values()) if (d.id === id) d.last_seen_at = time;
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO nrs_customer_accounts/.test(q)) {
+            const [id, store_id, username, password_salt, password_hash,
+              iterations, created_at, updated_at] = v;
+            if (accounts.has(username)) {
+              throw new Error("UNIQUE constraint failed: nrs_customer_accounts.username");
+            }
+            accounts.set(username, {
+              id, store_id, username, password_salt, password_hash,
+              iterations, active: 1, created_at, updated_at
+            });
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO devices/.test(q)) {
+            const [id, store_id, name, token_hash, created_at, last_seen_at] = v;
+            devices.set(token_hash, {
+              id, store_id, name, token_hash, created_at,
+              last_seen_at, revoked_at: null
+            });
+            return { meta: { changes: 1 } };
+          }
+
+          if (/^INSERT INTO nrs_customer_device_tokens/.test(q)) {
+            const [id, hash] = v;
+            customerTokens.set(hash, id);
+            return { meta: { changes: 1 } };
+          }
+
+          throw new Error("Unexpected integrated write: " + q);
+        }
+      };
+      return s;
+    }
+  };
+  return DB;
+}
+
+test("Owner to Customer end-to-end: create store, pair Owner, provision and login Customer", async () => {
+  const db = ownerCustomerFlowTestDb();
+  const env = { ADMIN_BOOTSTRAP_SECRET: "test-admin-secret", DB: db };
+
+  const createResponse = await worker.fetch(
+    createStoreRequest({ store_name: "Integrated NRS Store" }), env
+  );
+  const created = await createResponse.json();
+  assert.equal(createResponse.status, 201);
+  assert.equal(created.ok, true);
+  assert.ok(db.stores.has(created.store_id));
+  assert.ok(created.pairing_code);
+
+  const enrollResponse = await worker.fetch(
+    enrollmentRequest({
+      pairing_code: created.pairing_code,
+      device_name: "Owner Phone"
+    }), env
+  );
+  const owner = await enrollResponse.json();
+  assert.equal(enrollResponse.status, 201);
+  assert.equal(owner.ok, true);
+  assert.equal(owner.store_id, created.store_id);
+  assert.ok(owner.device_token);
+  assert.ok([...db.pairings.values()][0].used_at != null);
+
+  const provisionResponse = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "integrated.cashier", password: "IntegratedPass123" },
+      owner.device_token
+    ), env
+  );
+  const provisioned = await provisionResponse.json();
+  assert.equal(provisionResponse.status, 200);
+  assert.equal(provisioned.ok, true);
+  assert.equal(db.accounts.get("integrated.cashier").store_id, created.store_id);
+
+  const loginResponse = await worker.fetch(
+    customerTestRequest("/v1/customer/login", {
+      username: "integrated.cashier",
+      password: "IntegratedPass123",
+      device_name: "Customer Phone"
+    }), env
+  );
+  const customer = await loginResponse.json();
+  assert.equal(loginResponse.status, 200);
+  assert.equal(customer.ok, true);
+  assert.equal(customer.store_id, created.store_id);
+  assert.equal(customer.store_name, "Integrated NRS Store");
+  assert.notEqual(customer.device_id, owner.device_id);
+  assert.ok(customer.device_token);
+
+  const customerHash = customerTestHash(customer.device_token);
+  assert.equal(db.devices.get(customerHash).store_id, owner.store_id);
+  assert.equal(db.customerTokens.get(customerHash), customer.device_id);
+
+  const forbiddenResponse = await worker.fetch(
+    customerTestRequest(
+      "/v1/owner/customer-account",
+      { username: "second.cashier", password: "AnotherPass123" },
+      customer.device_token
+    ), env
+  );
+  const forbidden = await forbiddenResponse.json();
+  assert.equal(forbiddenResponse.status, 403);
+  assert.equal(forbidden.ok, false);
+  assert.equal(db.accounts.has("second.cashier"), false);
+});
+// END NRS_OWNER_CUSTOMER_END_TO_END_V1
