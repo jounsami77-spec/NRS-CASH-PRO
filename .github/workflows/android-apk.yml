@@ -100,7 +100,8 @@ jobs:
           gradle --no-daemon -p android \
             :app:assembleOwnerDebug \
             :app:assembleCustomerDebug \
-            :app:assembleOwnerRelease
+            :app:assembleOwnerRelease \
+            :app:assembleCustomerRelease
 
       - name: Validate signed owner update APK
         shell: bash
@@ -126,10 +127,40 @@ jobs:
           echo "$BADGING" | head -5
 
           echo "$BADGING" |
-            grep -F "package: name='dz.nrs.cashpro' versionCode='15' versionName='1.2.3'"
+            grep -F "package: name='dz.nrs.cashpro' versionCode='16' versionName='1.2.4'"
 
           mkdir -p test-release
-          cp "$APK" test-release/cash.pro.S.M.G.R-1.2.3-TEST.apk
+          cp "$APK" test-release/cash.pro.S.M.G.R-1.2.4-OWNER-TEST.apk
+
+          sha256sum test-release/*.apk
+
+      - name: Validate signed customer APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APK="android/app/build/outputs/apk/customer/release/app-customer-release.apk"
+          test -s "$APK"
+
+          SIZE="$(stat -c '%s' "$APK")"
+          echo "Customer APK size: $SIZE bytes"
+          test "$SIZE" -gt 10000000
+
+          unzip -t "$APK"
+
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+
+          "$APKSIGNER" verify --verbose --print-certs "$APK"
+
+          BADGING="$("$AAPT" dump badging "$APK")"
+          echo "$BADGING" | head -5
+
+          echo "$BADGING" |
+            grep -F "package: name='dz.nrs.cashpro.customer' versionCode='16' versionName='1.2.4'"
+
+          mkdir -p test-release
+          cp "$APK" test-release/cash.pro-Customer-1.2.4-TEST.apk
 
           sha256sum test-release/*.apk
 
@@ -137,7 +168,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nrs-cash-pro-owner-release
-          path: test-release/cash.pro.S.M.G.R-1.2.3-TEST.apk
+          path: test-release/cash.pro.S.M.G.R-1.2.4-OWNER-TEST.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload signed customer test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: nrs-cash-pro-customer-release
+          path: test-release/cash.pro-Customer-1.2.4-TEST.apk
           if-no-files-found: error
           retention-days: 14
 

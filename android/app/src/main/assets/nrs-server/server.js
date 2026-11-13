@@ -145,6 +145,299 @@ CREATE INDEX IF NOT EXISTS idx_sales_customer_phone
 // END NRS_INVOICE_LIFECYCLE_V1
 
 
+// NRS_CLOUD_SYNC_LOCAL_SCHEMA_V1
+// Local-first synchronization foundation.
+// Existing numeric IDs and customer records are preserved.
+
+addColumn('stores', 'sync_uuid', 'TEXT');
+addColumn('stores', 'cloud_store_id', 'TEXT');
+
+addColumn('products', 'sync_uuid', 'TEXT');
+addColumn('sales', 'sync_uuid', 'TEXT');
+addColumn('sale_items', 'sync_uuid', 'TEXT');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS sync_outbox (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ event_uuid TEXT NOT NULL UNIQUE,
+ store_id INTEGER NOT NULL,
+ entity_type TEXT NOT NULL,
+ entity_uuid TEXT NOT NULL,
+ operation TEXT NOT NULL,
+ payload_json TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT,
+ synced_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_pending
+ ON sync_outbox(store_id, synced_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_sync_outbox_entity
+ ON sync_outbox(store_id, entity_type, entity_uuid);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+ store_id INTEGER PRIMARY KEY,
+ cloud_store_id TEXT,
+ device_id TEXT,
+ device_token TEXT,
+ pull_cursor INTEGER NOT NULL DEFAULT 0,
+ last_sync_at TEXT,
+ last_error TEXT,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS sync_applied_events (
+ event_uuid TEXT PRIMARY KEY,
+ store_id INTEGER NOT NULL,
+ server_seq INTEGER,
+ source_device_id TEXT,
+ entity_type TEXT NOT NULL,
+ entity_uuid TEXT NOT NULL,
+ operation TEXT NOT NULL,
+ applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sync_applied_store_seq
+ ON sync_applied_events(store_id,server_seq)
+ WHERE server_seq IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_sync_applied_store_time
+ ON sync_applied_events(store_id,applied_at);
+`);
+
+function nrsEnsureUuid(value) {
+ return value || crypto.randomUUID();
+}
+
+// Stable UUIDs are assigned once and never derived from local numeric IDs.
+db.exec('BEGIN IMMEDIATE');
+try {
+ const stores = db.prepare(
+  'SELECT id,sync_uuid FROM stores ORDER BY id'
+ ).all();
+
+ const setStore = db.prepare(
+  'UPDATE stores SET sync_uuid=? WHERE id=? AND sync_uuid IS NULL'
+ );
+
+ for (const row of stores) {
+  setStore.run(nrsEnsureUuid(row.sync_uuid), row.id);
+ }
+
+ const products = db.prepare(
+  'SELECT id,sync_uuid FROM products WHERE sync_uuid IS NULL ORDER BY id'
+ ).all();
+
+ const setProduct = db.prepare(
+  'UPDATE products SET sync_uuid=? WHERE id=? AND sync_uuid IS NULL'
+ );
+
+ for (const row of products) {
+  setProduct.run(crypto.randomUUID(), row.id);
+ }
+
+ const sales = db.prepare(
+  'SELECT id,sync_uuid FROM sales WHERE sync_uuid IS NULL ORDER BY id'
+ ).all();
+
+ const setSale = db.prepare(
+  'UPDATE sales SET sync_uuid=? WHERE id=? AND sync_uuid IS NULL'
+ );
+
+ for (const row of sales) {
+  setSale.run(crypto.randomUUID(), row.id);
+ }
+
+ const items = db.prepare(
+  'SELECT id,sync_uuid FROM sale_items WHERE sync_uuid IS NULL ORDER BY id'
+ ).all();
+
+ const setItem = db.prepare(
+  'UPDATE sale_items SET sync_uuid=? WHERE id=? AND sync_uuid IS NULL'
+ );
+
+ for (const row of items) {
+  setItem.run(crypto.randomUUID(), row.id);
+ }
+
+ // Create local sync state without enrolling or contacting the cloud.
+ db.prepare(`
+  INSERT OR IGNORE INTO sync_state(store_id)
+  SELECT id FROM stores
+ `).run();
+
+ db.exec('COMMIT');
+} catch (e) {
+ try { db.exec('ROLLBACK'); } catch (_) {}
+ throw e;
+}
+
+// UUID lookup helpers for subsequent transactional event capture.
+function nrsProductSyncUuid(productId, currentStoreId) {
+ const row = db.prepare(
+  'SELECT sync_uuid FROM products WHERE id=? AND store_id=?'
+ ).get(productId, currentStoreId);
+
+ return row?.sync_uuid || null;
+}
+
+function nrsEnqueueSyncEvent(currentStoreId, entityType, entityUuid,
+                             operation, payload, eventUuid) {
+ if (!Number.isSafeInteger(Number(currentStoreId)) ||
+     Number(currentStoreId) < 1) {
+  throw new Error('Invalid local store ID for sync event');
+ }
+
+ if (!['product', 'sale'].includes(entityType)) {
+  throw new Error('Unsupported sync entity type');
+ }
+
+ if (typeof entityUuid !== 'string' ||
+     !/^[0-9a-f-]{36}$/i.test(entityUuid)) {
+  throw new Error('Invalid sync entity UUID');
+ }
+
+ if (!payload || typeof payload !== 'object' ||
+     Array.isArray(payload)) {
+  throw new Error('Invalid sync event payload');
+ }
+
+ const id = eventUuid || crypto.randomUUID();
+
+ db.prepare(`
+  INSERT INTO sync_outbox
+   (event_uuid,store_id,entity_type,entity_uuid,operation,
+    payload_json,created_at)
+  VALUES(?,?,?,?,?,?,?)
+ `).run(
+  id,
+  Number(currentStoreId),
+  entityType,
+  entityUuid,
+  operation,
+  JSON.stringify(payload),
+  new Date().toISOString()
+ );
+
+ return id;
+}
+
+// Build a complete sale snapshot compatible with the cloud Worker.
+function nrsEnqueueSaleSnapshot(currentStoreId, saleId, stockDeltas) {
+ const sale = db.prepare(`
+  SELECT sync_uuid,total,status,created_at,customer_name,customer_phone
+  FROM sales WHERE id=? AND store_id=?
+ `).get(saleId, currentStoreId);
+
+ if (!sale || !sale.sync_uuid) {
+  throw new Error('Sale sync identity is missing');
+ }
+
+ const lines = db.prepare(`
+  SELECT si.sync_uuid AS line_sync_uuid,
+         si.name,si.quantity,si.base_quantity,si.unit,
+         si.price,si.subtotal,si.is_cancelled,si.cancelled_at,
+         p.sync_uuid AS product_sync_uuid
+  FROM sale_items si
+  LEFT JOIN products p
+    ON p.id=si.product_id AND p.store_id=si.store_id
+  WHERE si.sale_id=? AND si.store_id=?
+  ORDER BY si.id
+ `).all(saleId, currentStoreId);
+
+ if (!lines.length || lines.length > 200) {
+  throw new Error('Sale snapshot line count is invalid');
+ }
+
+ const items = lines.map(line => {
+  if (!line.line_sync_uuid) {
+   throw new Error('Sale line sync identity is missing');
+  }
+
+  return {
+   line_sync_uuid: line.line_sync_uuid,
+   product_sync_uuid: line.product_sync_uuid || null,
+   name: String(line.name),
+   quantity: Number(line.quantity),
+   base_quantity: Number(line.base_quantity || 0),
+    unit: String(line.unit || 'piece').slice(0,40),
+   price: Number(line.price),
+   subtotal: Number(line.subtotal),
+   is_cancelled: Number(line.is_cancelled) === 1,
+   cancelled_at: line.cancelled_at || null
+  };
+ });
+
+ const payload = {
+  sync_uuid: sale.sync_uuid,
+  total: Number(sale.total),
+  status: sale.status,
+  created_at: sale.created_at || new Date().toISOString(),
+  customer_name: sale.customer_name || '',
+  customer_phone: sale.customer_phone || '',
+  items,
+  stock_deltas: stockDeltas
+ };
+
+ return nrsEnqueueSyncEvent(
+  currentStoreId,
+  'sale',
+  sale.sync_uuid,
+  'snapshot',
+  payload
+ );
+}
+
+// Aggregate stock movements by stable product UUID.
+// Positive delta restores stock; negative delta deducts stock.
+function nrsBuildStockDeltas(currentStoreId, movements) {
+ const totals = new Map();
+
+ for (const movement of movements) {
+  const productId = Number(movement.product_id);
+  const delta = Number(movement.delta);
+
+  if (!Number.isSafeInteger(productId) || productId < 1 ||
+      !Number.isFinite(delta) || delta === 0) {
+   throw new Error('Invalid invoice stock movement');
+  }
+
+  const productUuid = nrsProductSyncUuid(productId, currentStoreId);
+  if (!productUuid) {
+   throw new Error('Product sync identity is missing: ' + productId);
+  }
+
+  const next = (totals.get(productUuid) || 0) + delta;
+  totals.set(productUuid, Math.round(next * 1000) / 1000);
+ }
+
+ const result = [...totals.entries()]
+  .filter(([, delta]) => delta !== 0)
+  .map(([product_sync_uuid, delta]) => ({product_sync_uuid, delta}));
+
+ if (result.length > 200) {
+  throw new Error('Invoice stock movement count exceeds sync limit');
+ }
+
+ return result;
+}
+
+// END NRS_CLOUD_SYNC_LOCAL_SCHEMA_V1
+
+// NRS_CLOUD_SYNC_URL_MIGRATION_V1
+{
+ const columns = db.prepare("PRAGMA table_info(sync_state)").all();
+ if (!columns.some(c => c.name === 'cloud_url')) {
+  db.exec("ALTER TABLE sync_state ADD COLUMN cloud_url TEXT NOT NULL DEFAULT ''");
+ }
+}
+// END NRS_CLOUD_SYNC_URL_MIGRATION_V1
+
+
+
+
 db.exec(`
 CREATE INDEX IF NOT EXISTS idx_users_store_id ON users(store_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
@@ -176,15 +469,16 @@ if (/barcode\s+TEXT\s+UNIQUE/i.test(productSQL)) {
     brand TEXT NOT NULL DEFAULT '',
     purchase_price REAL NOT NULL DEFAULT 0,
     unit TEXT NOT NULL DEFAULT 'piece',
-    pack_size REAL NOT NULL DEFAULT 1
+    pack_size REAL NOT NULL DEFAULT 1,
+    sync_uuid TEXT
    );
    INSERT INTO products(
     id,name,barcode,price,stock,category,created_at,store_id,
-    brand,purchase_price,unit,pack_size
+    brand,purchase_price,unit,pack_size,sync_uuid
    )
    SELECT
     id,name,barcode,price,stock,category,created_at,store_id,
-    brand,purchase_price,unit,pack_size
+    brand,purchase_price,unit,pack_size,sync_uuid
    FROM products_legacy_migration;
    DROP TABLE products_legacy_migration;
    CREATE INDEX idx_products_store_id ON products(store_id);
@@ -332,6 +626,474 @@ function startTrialIfNeeded(storeId) {
   `).run(start.toISOString(),end.toISOString(),storeId);
  }
 }
+
+
+/* NRS_CLOUD_SYNC_ENGINE_V2 */
+const nrsCloudSyncLocks = new Set();
+
+function nrsSyncUrl(base, suffix) {
+  const u = new URL(base);
+  if (u.protocol !== 'https:') throw new Error('Worker يجب أن يستخدم HTTPS');
+  return u.origin + suffix;
+}
+
+async function nrsSyncFetch(url, token, options={}) {
+  const response = await fetch(url, {
+    ...options,
+    signal: AbortSignal.timeout(25000),
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  let data;
+  try { data = await response.json(); }
+  catch { throw new Error('استجابة Worker غير صالحة'); }
+  if (!response.ok || data?.ok !== true)
+    throw new Error(String(data?.error || ('Worker HTTP ' + response.status)).slice(0,400));
+  return data;
+}
+
+function nrsSyncApplyEvent(storeId, event) {
+  const eventUuid = String(event.event_uuid || '');
+  const entityType = String(event.entity_type || '');
+  const entityUuid = String(event.entity_uuid || '');
+  const operation = String(event.operation || '');
+  const seq = Number(event.seq);
+  const payload = typeof event.payload === 'string'
+    ? JSON.parse(event.payload)
+    : (event.payload ?? (event.payload_json ? JSON.parse(event.payload_json) : null));
+
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  if (!uuidPattern.test(eventUuid) ||
+      !uuidPattern.test(entityUuid) ||
+      !Number.isSafeInteger(seq) || seq < 1 ||
+      !payload || typeof payload !== 'object' || Array.isArray(payload))
+    throw new Error('حدث سحابي غير صالح');
+
+  if (db.prepare(
+    'SELECT 1 FROM sync_applied_events WHERE event_uuid=? AND store_id=?'
+  ).get(eventUuid, storeId)) return;
+
+  if (entityType === 'product') {
+    if (payload.sync_uuid !== entityUuid)
+      throw new Error('هوية المنتج غير متطابقة');
+
+    if (operation === 'create') {
+      const existing = db.prepare(
+        'SELECT id FROM products WHERE store_id=? AND sync_uuid=?'
+      ).get(storeId, entityUuid);
+
+      if (!existing) {
+        const name = String(payload.name || '').trim();
+        const price = Number(payload.price);
+        const stock = Number(payload.initial_stock ?? 0);
+        const purchase = Number(payload.purchase_price || 0);
+        const pack = Number(payload.pack_size || 1);
+
+        if (!name || name.length > 200 ||
+            !Number.isFinite(price) || price < 0 ||
+            !Number.isFinite(stock) || stock < 0 ||
+            !Number.isFinite(purchase) || purchase < 0 ||
+            !Number.isFinite(pack) || pack <= 0)
+          throw new Error('بيانات إنشاء المنتج غير سليمة');
+
+        db.prepare(
+          'INSERT INTO products (name,barcode,price,stock,category,store_id,purchase_price,unit,pack_size,sync_uuid) VALUES(?,?,?,?,?,?,?,?,?,?)'
+        ).run(
+          name,
+          payload.barcode ? String(payload.barcode) : null,
+          price, stock,
+          String(payload.category || 'عام'),
+          storeId, purchase,
+          String(payload.unit || 'piece'), pack,
+          entityUuid
+        );
+      }
+    } else if (operation === 'update') {
+      const product = db.prepare(
+        'SELECT id FROM products WHERE store_id=? AND sync_uuid=?'
+      ).get(storeId, entityUuid);
+      if (!product) throw new Error('المنتج غير موجود لتطبيق التعديل');
+
+      const name = String(payload.name || '').trim();
+      const price = Number(payload.price);
+      const purchase = Number(payload.purchase_price || 0);
+      const pack = Number(payload.pack_size || 1);
+
+      if (!name || name.length > 200 ||
+          !Number.isFinite(price) || price < 0 ||
+          !Number.isFinite(purchase) || purchase < 0 ||
+          !Number.isFinite(pack) || pack <= 0)
+        throw new Error('بيانات تعديل المنتج غير سليمة');
+
+      db.prepare(
+        'UPDATE products SET name=?,barcode=?,price=?,category=?,purchase_price=?,unit=?,pack_size=? WHERE store_id=? AND sync_uuid=?'
+      ).run(
+        name,
+        payload.barcode ? String(payload.barcode) : null,
+        price, String(payload.category || 'عام'),
+        purchase, String(payload.unit || 'piece'), pack,
+        storeId, entityUuid
+      );
+    } else if (operation === 'stock.adjust') {
+      const delta = Number(payload.delta);
+      if (!Number.isFinite(delta) || delta === 0)
+        throw new Error('حركة مخزون غير صالحة');
+
+      const product = db.prepare(
+        'SELECT id,stock FROM products WHERE store_id=? AND sync_uuid=?'
+      ).get(storeId, entityUuid);
+      if (!product) throw new Error('المنتج غير موجود لحركة المخزون');
+
+      const next = Math.round((Number(product.stock) + delta) * 1000) / 1000;
+      if (!Number.isFinite(next) || next < 0)
+        throw new Error('حركة المخزون ستنتج كمية سالبة');
+
+      db.prepare(
+        'UPDATE products SET stock=? WHERE id=? AND store_id=?'
+      ).run(next, product.id, storeId);
+    } else if (operation === 'delete') {
+      const product = db.prepare(
+        'SELECT id FROM products WHERE store_id=? AND sync_uuid=?'
+      ).get(storeId, entityUuid);
+
+      if (product) {
+        db.prepare(
+          'UPDATE sale_items SET product_id=NULL WHERE product_id=? AND store_id=?'
+        ).run(product.id, storeId);
+        db.prepare(
+          'DELETE FROM products WHERE id=? AND store_id=?'
+        ).run(product.id, storeId);
+      }
+    } else {
+      throw new Error('عملية المنتج غير مدعومة: ' + operation);
+    }
+
+  } else if (entityType === 'sale' && operation === 'snapshot') {
+    if (payload.sync_uuid !== entityUuid ||
+        !Array.isArray(payload.items) ||
+        payload.items.length < 1 || payload.items.length > 200)
+      throw new Error('لقطة الفاتورة غير صالحة');
+
+    if (!['sold','exchanged','returned','cancelled'].includes(payload.status))
+      throw new Error('حالة الفاتورة غير صالحة');
+
+    const total = Number(payload.total);
+    if (!Number.isFinite(total) || total < 0)
+      throw new Error('مجموع الفاتورة غير صالح');
+
+    let sale = db.prepare(
+      'SELECT id FROM sales WHERE store_id=? AND sync_uuid=?'
+    ).get(storeId, entityUuid);
+
+    if (!sale) {
+      const result = db.prepare(
+        'INSERT INTO sales (total,created_at,store_id,customer_name,customer_phone,status,sync_uuid) VALUES(?,?,?,?,?,?,?)'
+      ).run(
+        total,
+        String(payload.created_at || new Date().toISOString()),
+        storeId,
+        String(payload.customer_name || '').slice(0,120),
+        String(payload.customer_phone || '').slice(0,40),
+        payload.status, entityUuid
+      );
+      sale = { id: Number(result.lastInsertRowid) };
+    } else {
+      db.prepare(
+        'UPDATE sales SET total=?,customer_name=?,customer_phone=?,status=? WHERE id=? AND store_id=?'
+      ).run(
+        total,
+        String(payload.customer_name || '').slice(0,120),
+        String(payload.customer_phone || '').slice(0,40),
+        payload.status, sale.id, storeId
+      );
+    }
+
+    const existingLines = db.prepare(
+      'SELECT id,sync_uuid FROM sale_items WHERE sale_id=? AND store_id=?'
+    ).all(sale.id, storeId);
+
+    const incoming = new Set();
+
+    const insertLine = db.prepare(
+      'INSERT INTO sale_items (sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity,sync_uuid,is_cancelled,cancelled_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)'
+    );
+
+    const updateLine = db.prepare(
+      'UPDATE sale_items SET product_id=?,name=?,price=?,quantity=?,subtotal=?,unit=?,base_quantity=?,is_cancelled=?,cancelled_at=? WHERE id=? AND sale_id=? AND store_id=?'
+    );
+
+    for (const item of payload.items) {
+      const lineUuid = String(item.line_sync_uuid || '');
+      if (!uuidPattern.test(lineUuid) || incoming.has(lineUuid))
+        throw new Error('معرّف بند الفاتورة مكرر أو غير صالح');
+      incoming.add(lineUuid);
+
+      const quantity = Number(item.quantity);
+      const base = Number(item.base_quantity);
+      const price = Number(item.price);
+      const subtotal = Number(item.subtotal);
+
+      if (!Number.isFinite(quantity) || quantity <= 0 ||
+          !Number.isFinite(base) || base < 0 ||
+          !Number.isFinite(price) || price < 0 ||
+          !Number.isFinite(subtotal) || subtotal < 0)
+        throw new Error('قيم بند الفاتورة غير صالحة');
+
+      let productId = null;
+      if (item.product_sync_uuid) {
+        const product = db.prepare(
+          'SELECT id FROM products WHERE store_id=? AND sync_uuid=?'
+        ).get(storeId, String(item.product_sync_uuid));
+        if (product) productId = product.id;
+      }
+
+      const oldLine = existingLines.find(x => x.sync_uuid === lineUuid);
+
+      const values = [
+        productId,
+        String(item.name || '').slice(0,200),
+        price, quantity, subtotal,
+        String(item.unit || 'piece'), base,
+        item.is_cancelled ? 1 : 0,
+        item.cancelled_at || null
+      ];
+
+      if (oldLine) {
+        updateLine.run(...values, oldLine.id, sale.id, storeId);
+      } else {
+        insertLine.run(
+          sale.id,
+          ...values.slice(0,5),
+          storeId,
+          values[5],
+          values[6],
+          lineUuid,
+          values[7],
+          values[8]
+        );
+      }
+    }
+
+    for (const oldLine of existingLines) {
+      if (!incoming.has(oldLine.sync_uuid)) {
+        db.prepare(
+          'DELETE FROM sale_items WHERE id=? AND sale_id=? AND store_id=?'
+        ).run(oldLine.id, sale.id, storeId);
+      }
+    }
+
+    if (!Array.isArray(payload.stock_deltas) || payload.stock_deltas.length > 200)
+      throw new Error('حركات مخزون الفاتورة غير صالحة');
+
+    const seenProducts = new Set();
+
+    for (const movement of payload.stock_deltas) {
+      const productUuid = String(movement.product_sync_uuid || '');
+      const delta = Number(movement.delta);
+
+      if (!uuidPattern.test(productUuid) ||
+          !Number.isFinite(delta) || delta === 0 ||
+          seenProducts.has(productUuid))
+        throw new Error('حركة مخزون مكررة أو غير صالحة');
+
+      seenProducts.add(productUuid);
+
+      const product = db.prepare(
+        'SELECT id,stock FROM products WHERE store_id=? AND sync_uuid=?'
+      ).get(storeId, productUuid);
+
+      if (!product) throw new Error('منتج حركة الفاتورة غير موجود');
+
+      const next = Math.round((Number(product.stock) + delta) * 1000) / 1000;
+      if (!Number.isFinite(next) || next < 0)
+        throw new Error('حركة الفاتورة ستنتج مخزوناً سالباً');
+
+      db.prepare(
+        'UPDATE products SET stock=? WHERE id=? AND store_id=?'
+      ).run(next, product.id, storeId);
+    }
+
+  } else {
+    throw new Error('نوع حدث غير مدعوم');
+  }
+
+  db.prepare(
+    'INSERT INTO sync_applied_events (event_uuid,store_id,server_seq,source_device_id,entity_type,entity_uuid,operation) VALUES(?,?,?,?,?,?,?)'
+  ).run(
+    eventUuid, storeId, seq,
+    event.source_device_id || null,
+    entityType, entityUuid, operation
+  );
+}
+
+async function nrsRunCloudSync(storeId) {
+  if (nrsCloudSyncLocks.has(storeId))
+    throw new Error('المزامنة جارية بالفعل');
+
+  nrsCloudSyncLocks.add(storeId);
+
+  try {
+    const state = db.prepare(
+      'SELECT * FROM sync_state WHERE store_id=?'
+    ).get(storeId);
+
+    if (!state || !state.cloud_store_id || !state.device_id ||
+        !state.device_token || !state.cloud_url)
+      throw new Error('المحل غير مقترن بالسحابة');
+
+    const base = String(state.cloud_url).replace(/\/+$/, '');
+    const token = String(state.device_token);
+
+    const resultSummary = {
+      pushed: 0,
+      pulled: 0,
+      cursor: Number(state.pull_cursor || 0)
+    };
+
+    const pending = db.prepare(
+      'SELECT event_uuid,entity_type,entity_uuid,operation,payload_json,created_at FROM sync_outbox WHERE store_id=? AND synced_at IS NULL ORDER BY id LIMIT 100'
+    ).all(storeId);
+
+    if (pending.length) {
+      const events = pending.map(row => ({
+        event_uuid: row.event_uuid,
+        entity_type: row.entity_type,
+        entity_uuid: row.entity_uuid,
+        operation: row.operation,
+        payload: JSON.parse(row.payload_json),
+        created_at: row.created_at
+      }));
+
+      try {
+        const pushResponse = await nrsSyncFetch(
+          nrsSyncUrl(base, '/v1/sync/push'),
+          token,
+          { method: 'POST', body: JSON.stringify({ events }) }
+        );
+
+        // Accept the push only when every submitted event has an exact acknowledgement.
+        const acknowledgements = pushResponse?.acknowledgements;
+        if (!Array.isArray(acknowledgements) ||
+            acknowledgements.length !== pending.length ||
+            Number(pushResponse.accepted) !== pending.length) {
+          throw new Error('إقرار المزامنة السحابية ناقص أو غير صالح؛ لم يتم اعتماد أي حدث');
+        }
+
+        const expectedIds = new Set(pending.map(row => row.event_uuid));
+        const acknowledgedIds = new Set();
+
+        for (const ack of acknowledgements) {
+          if (!ack || typeof ack.event_uuid !== 'string' ||
+              ack.accepted !== true ||
+              typeof ack.duplicate !== 'boolean' ||
+              !expectedIds.has(ack.event_uuid) ||
+              acknowledgedIds.has(ack.event_uuid)) {
+            throw new Error('إقرار حدث سحابي غير صالح أو مكرر؛ لم يتم اعتماد الأحداث');
+          }
+          acknowledgedIds.add(ack.event_uuid);
+        }
+
+        if (acknowledgedIds.size !== expectedIds.size) {
+          throw new Error('لم يتم تأكيد جميع أحداث المزامنة؛ بقيت الأحداث معلّقة');
+        }
+
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          const mark = db.prepare(
+            'UPDATE sync_outbox SET synced_at=?,last_error=NULL WHERE store_id=? AND event_uuid=? AND synced_at IS NULL'
+          );
+          const now = new Date().toISOString();
+
+          for (const row of pending) {
+            const result = mark.run(now, storeId, row.event_uuid);
+            if (Number(result.changes) !== 1) {
+              throw new Error('تعذر اعتماد حدث المزامنة محلياً: ' + row.event_uuid);
+            }
+            resultSummary.pushed++;
+          }
+
+          db.exec('COMMIT');
+        } catch (e) {
+          try { db.exec('ROLLBACK'); } catch {}
+          throw e;
+        }
+      } catch (e) {
+        db.prepare(
+          'UPDATE sync_outbox SET attempts=attempts+1,last_error=? WHERE store_id=? AND synced_at IS NULL'
+        ).run(String(e.message || e).slice(0,500), storeId);
+        throw e;
+      }
+    }
+
+    for (let page = 0; page < 10; page++) {
+      const current = Number(db.prepare(
+        'SELECT pull_cursor FROM sync_state WHERE store_id=?'
+      ).get(storeId)?.pull_cursor || 0);
+
+      const url = nrsSyncUrl(
+        base,
+        '/v1/sync/pull?after=' + encodeURIComponent(current) + '&limit=200'
+      );
+
+      const response = await nrsSyncFetch(url, token, { method: 'GET' });
+
+      if (!Array.isArray(response.events))
+        throw new Error('قائمة أحداث السحابة غير صالحة');
+
+      const next = Number(response.next_cursor);
+      if (!Number.isSafeInteger(next) || next < current)
+        throw new Error('مؤشر المزامنة غير صالح');
+
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        let previous = current;
+
+        for (const event of response.events) {
+          const seq = Number(event.seq);
+          if (!Number.isSafeInteger(seq) || seq <= previous || seq > next)
+            throw new Error('ترتيب أحداث السحابة غير صحيح');
+
+          previous = seq;
+          nrsSyncApplyEvent(storeId, event);
+          resultSummary.pulled++;
+        }
+
+        db.prepare(
+          'UPDATE sync_state SET pull_cursor=?,last_sync_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE store_id=?'
+        ).run(next, new Date().toISOString(), storeId);
+
+        db.exec('COMMIT');
+        resultSummary.cursor = next;
+      } catch (e) {
+        try { db.exec('ROLLBACK'); } catch {}
+        throw e;
+      }
+
+      if (next === current || response.events.length === 0) break;
+    }
+
+    db.prepare(
+      'UPDATE sync_state SET last_sync_at=?,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE store_id=?'
+    ).run(new Date().toISOString(), storeId);
+
+    return resultSummary;
+
+  } catch (e) {
+    try {
+      db.prepare(
+        'UPDATE sync_state SET last_error=?,updated_at=CURRENT_TIMESTAMP WHERE store_id=?'
+      ).run(String(e.message || e).slice(0,500), storeId);
+    } catch {}
+    throw e;
+  } finally {
+    nrsCloudSyncLocks.delete(storeId);
+  }
+}
+/* END NRS_CLOUD_SYNC_ENGINE_V2 */
 
 async function api(req,res,url) {
  const p = url.pathname;
@@ -572,10 +1334,196 @@ async function api(req,res,url) {
  }
 
  if (!requireAuth(user,res)) return;
+
+ // Unified application: store owners can use store operations.
+ // The super_admin account remains restricted to administration below.
+
  if (user.role === 'super_admin') {
   return send(res,403,{error:'حساب المدير العام مخصص لواجهة الإدارة'});
  }
  const storeId=user.store_id;
+
+
+ // NRS_CLOUD_DEVICE_ENROLL_V1
+
+ if (p === '/api/cloud-sync/run' && req.method === 'POST') {
+  if (!user || user.role === 'super_admin')
+   return send(res,403,{error:'المزامنة متاحة لحسابات المحلات فقط'});
+  try {
+   const result = await nrsRunCloudSync(storeId);
+   return send(res,200,{ok:true,...result});
+  } catch(e) {
+   return send(res,502,{ok:false,error:String(e.message || e)});
+  }
+ }
+
+ if (p === '/api/cloud-sync/enroll' && req.method === 'POST') {
+  if (process.env.NRS_APP_EDITION === 'customer') {
+   return send(res,403,{error:'إقران المحل متاح من نسخة المالك فقط'});
+  }
+
+  if (user.role !== 'store_owner') {
+   return send(res,403,{error:'يجب تسجيل الدخول بحساب مالك المحل'});
+  }
+
+  let data;
+  try {
+   data = await bodyJSON(req);
+  } catch (e) {
+   return send(res,400,{error:e.message});
+  }
+
+  const workerUrl = String(data.workerUrl || '').trim().replace(/\/+$/,'');
+  const pairingCode = String(data.pairingCode || '').trim();
+  const deviceName = String(data.deviceName || 'NRS Owner Device').trim();
+
+  if (!workerUrl || !pairingCode) {
+   return send(res,400,{error:'أدخل عنوان Worker ورمز الاقتران'});
+  }
+
+  let parsed;
+  try {
+   parsed = new URL(workerUrl);
+  } catch {
+   return send(res,400,{error:'عنوان Worker غير صالح'});
+  }
+
+  if (
+   parsed.protocol !== 'https:' ||
+   parsed.username ||
+   parsed.password ||
+   parsed.search ||
+   parsed.hash ||
+   parsed.pathname !== '/' ||
+   parsed.hostname === 'localhost' ||
+   parsed.hostname.endsWith('.local')
+  ) {
+   return send(res,400,{error:'يجب إدخال عنوان HTTPS صحيح لـ Cloudflare Worker'});
+  }
+
+  if (pairingCode.length < 12 || pairingCode.length > 256) {
+   return send(res,400,{error:'رمز الاقتران غير صالح'});
+  }
+
+  if (deviceName.length < 2 || deviceName.length > 80) {
+   return send(res,400,{error:'اسم الجهاز يجب أن يكون بين حرفين و80 حرفًا'});
+  }
+
+  try {
+   const endpoint = workerUrl + '/v1/device/enroll';
+
+   const response = await fetch(endpoint,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+     pairing_code:pairingCode,
+     device_name:deviceName
+    }),
+    signal:AbortSignal.timeout(20000)
+   });
+
+   let result;
+   try {
+    result = await response.json();
+   } catch {
+    result = {};
+   }
+
+   if (!response.ok || !result.ok || !result.device_token) {
+    const message = String(result.error || result.message || 'رفض Worker تسجيل الجهاز');
+    return send(res,response.status >= 400 && response.status < 500 ? response.status : 502,{
+     error:message.slice(0,300)
+    });
+   }
+
+   const cloudStoreId = String(result.store_id || result.storeId || '').trim();
+   const deviceId = String(result.device_id || result.deviceId || '').trim();
+   const deviceToken = String(result.device_token || '').trim();
+
+   if (!cloudStoreId || !deviceId || !deviceToken) {
+    return send(res,502,{
+     error:'استجابة Worker ناقصة: يلزم store_id وdevice_id وdevice_token. لم يتم حفظ الاقتران.'
+    });
+   }
+
+   // Preserve existing enrollment identity and cursor.
+   const existingSyncState = db.prepare(
+    'SELECT cloud_store_id,device_id,cloud_url FROM sync_state WHERE store_id=?'
+   ).get(storeId);
+
+   if (existingSyncState) {
+    const sameEnrollment =
+     String(existingSyncState.cloud_store_id || '') === cloudStoreId &&
+     String(existingSyncState.device_id || '') === deviceId &&
+     String(existingSyncState.cloud_url || '').replace(/\/+$/, '') === workerUrl;
+
+    if (!sameEnrollment) {
+     return send(res,409,{
+      error:'هوية الجهاز أو الخادم السحابي مختلفة. يلزم ترحيل آمن قبل إعادة الاقتران.'
+     });
+    }
+   }
+
+   // Save enrollment without resetting the local synchronization cursor.
+   db.prepare(`
+    INSERT INTO sync_state(
+     store_id,cloud_store_id,device_id,device_token,
+     cloud_url,pull_cursor,last_sync_at,last_error,updated_at
+    )
+    VALUES(?,?,?,?,?,0,NULL,NULL,CURRENT_TIMESTAMP)
+    ON CONFLICT(store_id) DO UPDATE SET
+     cloud_store_id=excluded.cloud_store_id,
+     device_id=excluded.device_id,
+     device_token=excluded.device_token,
+     cloud_url=excluded.cloud_url,
+     pull_cursor=sync_state.pull_cursor,
+     last_sync_at=sync_state.last_sync_at,
+     last_error=NULL,
+     updated_at=CURRENT_TIMESTAMP
+   `).run(
+    storeId,
+    cloudStoreId,
+    deviceId,
+    deviceToken,
+    workerUrl
+   );
+
+   return send(res,200,{
+    ok:true,
+    paired:true,
+    cloudStoreId,
+    deviceId,
+    message:'تم تسجيل هذا الجهاز في المحل السحابي. لم تُنقل البيانات القديمة بعد.'
+   });
+
+  } catch(e) {
+   console.error('[NRS cloud enrollment]',String(e.message || e).slice(0,300));
+   return send(res,502,{
+    error:'تعذر الاتصال بخدمة الاقتران. تحقق من الإنترنت وعنوان Worker وصلاحية الرمز.'
+   });
+  }
+ }
+ // END NRS_CLOUD_DEVICE_ENROLL_V1
+
+ // NRS_CLOUD_DEVICE_STATUS_V1
+ if (p === '/api/cloud-sync/status' && req.method === 'GET') {
+  const state = db.prepare(`
+   SELECT cloud_store_id,device_id,cloud_url,pull_cursor,last_sync_at,last_error
+   FROM sync_state WHERE store_id=?
+  `).get(storeId);
+
+  return send(res,200,{
+   ok:true,
+   paired:!!(state && state.cloud_store_id && state.device_id && state.cloud_url),
+   cloudStoreId:state?.cloud_store_id || null,
+   deviceId:state?.device_id || null,
+   cloudUrl:state?.cloud_url || null,
+   pullCursor:Number(state?.pull_cursor || 0),
+   lastSyncAt:state?.last_sync_at || null,
+   lastError:state?.last_error || null
+  });
+ }
+ // END NRS_CLOUD_DEVICE_STATUS_V1
 
  if (p==='/api/settings' && req.method==='GET') {
   const rows=db.prepare('SELECT key,value FROM app_settings WHERE store_id=?').all(storeId);
@@ -702,6 +1650,7 @@ if (p==='/api/products' && req.method==='GET') {
   return send(res,200,rows);
  }
  if (p==='/api/products' && req.method==='POST') {
+  let transactionOpen = false;
   try {
    const d=await bodyJSON(req);
    const name=String(d.name||'').trim(), price=Number(d.price);
@@ -711,45 +1660,32 @@ if (p==='/api/products' && req.method==='GET') {
    const unit=String(d.unit||'piece');
    const businessType=db.prepare('SELECT business_type FROM stores WHERE id=?').get(storeId)?.business_type||'grocery';
    const unitsByActivity={
-    grocery:['piece','carton'],
-    food_wholesale:['piece','carton','kg','ton'],
-    oils:['piece','carton','liter'],
-    metal_work:['meter','shape','piece','kg','ton'],
-    clothing:['piece','pair'],
-    fabrics:['meter','piece'],
-    electronics:['piece','box'],
-    computers:['piece','box'],
-    auto_parts:['piece','box'],
-    tires:['piece','pair'],
-    cosmetics:['piece','box','carton'],
-    perfumes:['piece','box','carton'],
-    restaurant:['piece','kg','liter'],
-    bakery:['piece','kg'],
-    vegetables:['piece','kg','carton'],
-    butcher:['kg','piece'],
-    fish:['kg','piece'],
-    building:['piece'],
-    hardware:['piece','box','meter'],
-    quincaillerie:['piece','box','meter'],
-    furniture:['piece'],
-    home_appliances:['piece','box'],
-    pharmacy:['piece','box'],
-    medical:['piece','box'],
-    books:['piece'],
-    barber:['piece'],
-    laundry:['piece','kg'],
-    agriculture:['kg','ton','piece','bag'],
+    grocery:['piece','carton'],food_wholesale:['piece','carton','kg','ton'],
+    oils:['piece','carton','liter'],metal_work:['meter','shape','piece','kg','ton'],
+    clothing:['piece','pair'],fabrics:['meter','piece'],
+    electronics:['piece','box'],computers:['piece','box'],
+    auto_parts:['piece','box'],tires:['piece','pair'],
+    cosmetics:['piece','box','carton'],perfumes:['piece','box','carton'],
+    restaurant:['piece','kg','liter'],bakery:['piece','kg'],
+    vegetables:['piece','kg','carton'],butcher:['kg','piece'],
+    fish:['kg','piece'],building:['piece'],hardware:['piece','box','meter'],
+    quincaillerie:['piece','box','meter'],furniture:['piece'],
+    home_appliances:['piece','box'],pharmacy:['piece','box'],
+    medical:['piece','box'],books:['piece'],barber:['piece'],
+    laundry:['piece','kg'],agriculture:['kg','ton','piece','bag'],
     repair:['piece','meter'],
     other:['piece','carton','meter','kg','g','liter','box','pair','bag','ton','shape']
    };
    const allowedUnits=unitsByActivity[businessType]||unitsByActivity.other;
    let barcode=String(d.barcode||'').trim()||null;
    const category=String(d.category||'عام').trim();
+
    if(!name || name.length>200 || !Number.isFinite(price) || price<0 ||
       !Number.isFinite(stock) || stock<0 || stock>100000000 ||
       !Number.isFinite(purchasePrice) || purchasePrice<0 ||
       !Number.isFinite(packSize) || packSize<=0 || !allowedUnits.includes(unit))
     return send(res,400,{error:'تحقق من الاسم والسعر والكمية والوحدة وسعر الشراء'});
+
    if(!barcode) {
     let nextId=Number(db.prepare('SELECT COALESCE(MAX(id),0)+1 AS n FROM products').get().n);
     barcode=`DZ${String(storeId).padStart(3,'0')}${String(nextId).padStart(8,'0')}`;
@@ -758,100 +1694,162 @@ if (p==='/api/products' && req.method==='GET') {
      barcode=`DZ${String(storeId).padStart(3,'0')}${String(nextId).padStart(8,'0')}`;
     }
    }
+
+   const syncUuid=crypto.randomUUID();
+   db.exec('BEGIN IMMEDIATE');
+   transactionOpen=true;
+
    const result=db.prepare(`INSERT INTO products
-    (name,barcode,price,stock,category,store_id,purchase_price,unit,pack_size)
-    VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(name,barcode,price,stock,category,storeId,purchasePrice,unit,packSize);
-   return send(res,201,db.prepare('SELECT * FROM products WHERE id=? AND store_id=?').get(Number(result.lastInsertRowid),storeId));
+    (name,barcode,price,stock,category,store_id,purchase_price,unit,pack_size,sync_uuid)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(name,barcode,price,stock,category,storeId,purchasePrice,unit,packSize,syncUuid);
+
+   nrsEnqueueSyncEvent(storeId,'product',syncUuid,'create',{
+    sync_uuid:syncUuid,name,price,initial_stock:stock,pack_size:packSize,
+    barcode,category,purchase_price:purchasePrice,unit
+   });
+
+   const created=db.prepare(
+    'SELECT * FROM products WHERE id=? AND store_id=?'
+   ).get(Number(result.lastInsertRowid),storeId);
+
+   db.exec('COMMIT');
+   transactionOpen=false;
+   return send(res,201,created);
   } catch(e) {
-   return send(res,400,{error:e.message.includes('UNIQUE')?'هذا الباركود مسجل في هذا المحل من قبل':e.message});
+   if(transactionOpen) {
+    try { db.exec('ROLLBACK'); } catch(_) {}
+   }
+   return send(res,400,{
+    error:String(e.message).includes('UNIQUE')
+     ? 'هذا الباركود مسجل في هذا المحل من قبل' : e.message
+   });
   }
  }
 
  const productEditMatch = p.match(/^\/api\/products\/(\d+)$/);
  if (productEditMatch && req.method === 'PUT') {
+  let transactionOpen=false;
   try {
-   const id = Number(productEditMatch[1]);
-   const d = await bodyJSON(req);
-   const old = db.prepare(
+   const id=Number(productEditMatch[1]);
+   const d=await bodyJSON(req);
+
+   db.exec('BEGIN IMMEDIATE');
+   transactionOpen=true;
+
+   const old=db.prepare(
     'SELECT * FROM products WHERE id=? AND store_id=?'
-   ).get(id, storeId);
-   if (!old) return send(res,404,{error:'المنتج غير موجود في متجرك'});
+   ).get(id,storeId);
 
-   const name = String(d.name ?? old.name).trim();
-   const price = Number(d.price ?? old.price);
-   const stock = Number(d.stock ?? old.stock);
-   const purchasePrice = Number(d.purchase_price ?? old.purchase_price ?? 0);
-   const packSize = Number(d.pack_size ?? old.pack_size ?? 1);
-   const unit = String(d.unit ?? old.unit ?? 'piece');
-   const category = String(d.category ?? old.category ?? 'عام').trim();
-   const barcodeText = String(d.barcode ?? old.barcode ?? '').trim();
-   const barcode = barcodeText || null;
-   const units = ['piece','carton','kg','ton','liter','meter','shape',
-                  'pair','box','bag','g'];
-
-   if (!name || name.length > 200 ||
-       !Number.isFinite(price) || price < 0 ||
-       !Number.isFinite(stock) || stock < 0 || stock > 100000000 ||
-       !Number.isFinite(purchasePrice) || purchasePrice < 0 ||
-       !Number.isFinite(packSize) || packSize <= 0 ||
-       !units.includes(unit)) {
-    return send(res,400,{error:'تحقق من الاسم والسعر والكمية والوحدة وسعر الشراء'});
+   if(!old) {
+    db.exec('ROLLBACK');
+    transactionOpen=false;
+    return send(res,404,{error:'المنتج غير موجود في متجرك'});
    }
 
-   if (barcode && db.prepare(
-       'SELECT 1 FROM products WHERE store_id=? AND barcode=? AND id<>?'
-      ).get(storeId, barcode, id)) {
-    return send(res,400,{error:'هذا الباركود مستخدم لمنتج آخر في متجرك'});
-   }
+   const name=String(d.name ?? old.name).trim();
+   const price=Number(d.price ?? old.price);
+   const stock=Math.round(Number(d.stock ?? old.stock)*1000)/1000;
+   const purchasePrice=Number(d.purchase_price ?? old.purchase_price ?? 0);
+   const packSize=Number(d.pack_size ?? old.pack_size ?? 1);
+   const unit=String(d.unit ?? old.unit ?? 'piece');
+   const category=String(d.category ?? old.category ?? 'عام').trim();
+   const barcodeText=String(d.barcode ?? old.barcode ?? '').trim();
+   const barcode=barcodeText || null;
+   const units=['piece','carton','kg','ton','liter','meter','shape',
+                'pair','box','bag','g'];
+
+   if(!name || name.length>200 || !Number.isFinite(price) || price<0 ||
+      !Number.isFinite(stock) || stock<0 || stock>100000000 ||
+      !Number.isFinite(purchasePrice) || purchasePrice<0 ||
+      !Number.isFinite(packSize) || packSize<=0 || !units.includes(unit))
+    throw new Error('تحقق من الاسم والسعر والكمية والوحدة وسعر الشراء');
+
+   if(barcode && db.prepare(
+    'SELECT 1 FROM products WHERE store_id=? AND barcode=? AND id<>?'
+   ).get(storeId,barcode,id))
+    throw new Error('هذا الباركود مستخدم لمنتج آخر في متجرك');
+
+   const syncUuid=old.sync_uuid || crypto.randomUUID();
+   const oldStock=Number(old.stock||0);
+   const stockDelta=Math.round((stock-oldStock)*1000)/1000;
 
    db.prepare(`UPDATE products
-      SET name=?, barcode=?, price=?, stock=?, category=?,
-          purchase_price=?, unit=?, pack_size=?
-      WHERE id=? AND store_id=?`)
-    .run(name,barcode,price,stock,category,purchasePrice,unit,packSize,id,storeId);
+    SET sync_uuid=?,name=?,barcode=?,price=?,stock=?,category=?,
+        purchase_price=?,unit=?,pack_size=?
+    WHERE id=? AND store_id=?`)
+    .run(syncUuid,name,barcode,price,stock,category,
+         purchasePrice,unit,packSize,id,storeId);
 
-   return send(res,200,db.prepare(
+   nrsEnqueueSyncEvent(storeId,'product',syncUuid,'update',{
+    sync_uuid:syncUuid,name,price,barcode,category,
+    purchase_price:purchasePrice,unit,pack_size:packSize
+   });
+
+   if(stockDelta!==0) {
+    nrsEnqueueSyncEvent(storeId,'product',syncUuid,'stock.adjust',{
+     sync_uuid:syncUuid,delta:stockDelta,reason:'product_edit'
+    });
+   }
+
+   const updated=db.prepare(
     'SELECT * FROM products WHERE id=? AND store_id=?'
-   ).get(id,storeId));
+   ).get(id,storeId);
+
+   db.exec('COMMIT');
+   transactionOpen=false;
+   return send(res,200,updated);
   } catch(e) {
-   return send(res,400,{error:e.message.includes('UNIQUE')
+   if(transactionOpen) {
+    try { db.exec('ROLLBACK'); } catch(_) {}
+   }
+   return send(res,400,{error:String(e.message).includes('UNIQUE')
     ? 'هذا الباركود مستخدم لمنتج آخر في متجرك' : e.message});
   }
  }
 
 
-
  if (productEditMatch && req.method === 'DELETE') {
-  const id = Number(productEditMatch[1]);
+  const id=Number(productEditMatch[1]);
+  let transactionOpen=false;
   try {
    db.exec('BEGIN IMMEDIATE');
+   transactionOpen=true;
 
-   const existing = db.prepare(
-    'SELECT id FROM products WHERE id=? AND store_id=?'
-   ).get(id, storeId);
+   const existing=db.prepare(
+    'SELECT id,sync_uuid FROM products WHERE id=? AND store_id=?'
+   ).get(id,storeId);
 
-   if (!existing) {
+   if(!existing) {
     db.exec('ROLLBACK');
+    transactionOpen=false;
     return send(res,404,{error:'المنتج غير موجود في متجرك'});
    }
 
-   // حفظ بنود الفواتير التاريخية وفصلها عن سجل المنتج المحذوف.
+   const syncUuid=existing.sync_uuid || crypto.randomUUID();
+
+   nrsEnqueueSyncEvent(storeId,'product',syncUuid,'delete',{
+    sync_uuid:syncUuid,local_id:id
+   });
+
    db.prepare(
     'UPDATE sale_items SET product_id=NULL WHERE product_id=? AND store_id=?'
    ).run(id,storeId);
 
-   const result = db.prepare(
+   const result=db.prepare(
     'DELETE FROM products WHERE id=? AND store_id=?'
    ).run(id,storeId);
 
-   if (result.changes !== 1)
+   if(result.changes!==1)
     throw new Error('لم يتم حذف المنتج؛ أعد المحاولة');
 
    db.exec('COMMIT');
+   transactionOpen=false;
    return send(res,200,{ok:true,deleted:true,id});
   } catch(e) {
-   try { db.exec('ROLLBACK'); } catch (_) {}
+   if(transactionOpen) {
+    try { db.exec('ROLLBACK'); } catch(_) {}
+   }
    return send(res,500,{error:e.message});
   }
  }
@@ -1003,6 +2001,9 @@ if (p==='/api/products' && req.method==='GET') {
     .run(saleId,storeId);
    db.prepare('INSERT INTO invoice_audit(store_id,sale_id,action,details) VALUES(?,?,?,?)')
     .run(storeId,saleId,'cancel',JSON.stringify({restoredLines:lines.length,previousTotal:sale.total}));
+   const stockDeltas = nrsBuildStockDeltas(storeId,
+    lines.map(x => ({product_id:x.product_id, delta:Number(x.base_quantity)})));
+   nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
    db.exec('COMMIT');
    return send(res,200,{ok:true,cancelled:true,saleId,
     message:'تم إلغاء الفاتورة وحفظ سجلها وإعادة المخزون'});
@@ -1079,6 +2080,10 @@ if (p==='/api/products' && req.method==='GET') {
    db.prepare('UPDATE sales SET total=?,status=? WHERE id=? AND store_id=?')
     .run(Math.round(Number(active.total)*100)/100,status,saleId,storeId);
    addAudit(saleId,'partial_return',{itemId,line,restored:Number(line.base_quantity)});
+   const stockDeltas = nrsBuildStockDeltas(storeId, [
+    {product_id:line.product_id, delta:Number(line.base_quantity)}
+   ]);
+   nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
    db.exec('COMMIT');
    return send(res,200,{ok:true,saleId,status,total:active.total,message:'تم إلغاء المنتج وإعادة مخزونه'});
   } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
@@ -1102,6 +2107,9 @@ if (p==='/api/products' && req.method==='GET') {
     .run(saleId,storeId);
    db.prepare("UPDATE sales SET total=0,status='returned' WHERE id=? AND store_id=?").run(saleId,storeId);
    addAudit(saleId,'full_return',{lines:lines.length,previousTotal:sale.total});
+   const stockDeltas = nrsBuildStockDeltas(storeId,
+    lines.map(x => ({product_id:x.product_id, delta:Number(x.base_quantity)})));
+   nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
    db.exec('COMMIT');
    return send(res,200,{ok:true,saleId,status:'returned',message:'تم استرجاع الفاتورة وإعادة المخزون'});
   } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
@@ -1130,15 +2138,22 @@ if (p==='/api/products' && req.method==='GET') {
     .run(replacement.stockUnits,newId,storeId,replacement.stockUnits);
    if(deduct.changes!==1) throw new Error('تعذر خصم مخزون المنتج البديل');
    db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE id=?').run(itemId);
-   db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
-    VALUES(?,?,?,?,?,?,?,?,?)`)
-    .run(saleId,newId,replacement.name,replacement.price,qty,replacement.subtotal,storeId,replacement.unit,replacement.stockUnits);
+   const replacementLineUuid = crypto.randomUUID();
+   if (!replacement.sync_uuid) throw new Error('Replacement product sync identity is missing');
+   db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity,sync_uuid)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`)
+    .run(saleId,newId,replacement.name,replacement.price,qty,replacement.subtotal,storeId,replacement.unit,replacement.stockUnits,replacementLineUuid);
    const active=db.prepare('SELECT COALESCE(SUM(subtotal),0) total FROM sale_items WHERE sale_id=? AND store_id=? AND is_cancelled=0')
     .get(saleId,storeId);
    const difference=Math.round((replacement.subtotal-Number(old.subtotal))*100)/100;
    db.prepare("UPDATE sales SET total=?,status='exchanged' WHERE id=? AND store_id=?")
     .run(Math.round(Number(active.total)*100)/100,saleId,storeId);
    addAudit(saleId,'exchange',{oldItem:old,newProductId:newId,newProductName:replacement.name,newQuantity:qty,newSubtotal:replacement.subtotal,priceDifference:difference});
+   const stockDeltas = nrsBuildStockDeltas(storeId, [
+    {product_id:old.product_id, delta:Number(old.base_quantity)},
+    {product_id:newId, delta:-Number(replacement.stockUnits)}
+   ]);
+   nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
    db.exec('COMMIT');
    return send(res,200,{ok:true,saleId,status:'exchanged',priceDifference:difference,
     customerOwes:Math.max(0,difference),refund:Math.max(0,-difference),
@@ -1172,15 +2187,25 @@ if (p==='/api/products' && req.method==='GET') {
     throw new Error('تعذر خصم مخزون '+x.name);
    db.prepare('UPDATE sale_items SET is_cancelled=1,cancelled_at=CURRENT_TIMESTAMP WHERE sale_id=? AND store_id=? AND is_cancelled=0')
     .run(saleId,storeId);
-   const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
-    VALUES(?,?,?,?,?,?,?,?,?)`);
+   const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity,sync_uuid)
+    VALUES(?,?,?,?,?,?,?,?,?,?)`);
    let total=0;
-   for(const x of newLines){ins.run(saleId,x.id,x.name,x.price,x.quantity,x.subtotal,storeId,x.unit,x.stockUnits);total+=x.subtotal;}
+   for(const x of newLines){
+    if(!x.sync_uuid) throw new Error('Product sync identity is missing: '+x.name);
+    ins.run(saleId,x.id,x.name,x.price,x.quantity,x.subtotal,storeId,x.unit,x.stockUnits,crypto.randomUUID());
+    total+=x.subtotal;
+   }
    const customerName=String(d.customerName??sale.customer_name??'').trim().slice(0,120);
    const customerPhone=String(d.customerPhone??sale.customer_phone??'').trim().slice(0,40);
    db.prepare("UPDATE sales SET total=?,customer_name=?,customer_phone=?,status=? WHERE id=? AND store_id=?")
     .run(Math.round(total*100)/100,customerName,customerPhone,sale.status==='exchanged'?'exchanged':'sold',saleId,storeId);
    addAudit(saleId,'edit',{oldLines,newLines,previousTotal:sale.total,newTotal:total});
+   const stockMovements = [
+    ...oldLines.map(x => ({product_id:x.product_id, delta:Number(x.base_quantity)})),
+    ...newLines.map(x => ({product_id:x.id, delta:-Number(x.stockUnits)}))
+   ];
+   const stockDeltas = nrsBuildStockDeltas(storeId,stockMovements);
+   nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
    db.exec('COMMIT');
    return send(res,200,{ok:true,saleId,total:Math.round(total*100)/100,message:'تم تعديل الفاتورة والمخزون'});
   } catch(e){try{db.exec('ROLLBACK')}catch{} return send(res,409,{error:e.message});}
@@ -1239,17 +2264,32 @@ if (p==='/api/products' && req.method==='GET') {
     total=Math.round(total*100)/100;
     const customerName=String(data.customerName||'').trim().slice(0,120);
     const customerPhone=String(data.customerPhone||'').trim().slice(0,40);
-    const sale=db.prepare("INSERT INTO sales(total,store_id,customer_name,customer_phone,status) VALUES(?,?,?,?,'sold')")
-     .run(total,storeId,customerName,customerPhone);
+    const saleUuid=crypto.randomUUID();
+    const sale=db.prepare("INSERT INTO sales(total,store_id,customer_name,customer_phone,status,sync_uuid) VALUES(?,?,?,?,'sold',?)")
+     .run(total,storeId,customerName,customerPhone,saleUuid);
     const saleId=Number(sale.lastInsertRowid);
-    const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity)
-      VALUES(?,?,?,?,?,?,?,?,?)`);
+    const ins=db.prepare(`INSERT INTO sale_items(sale_id,product_id,name,price,quantity,subtotal,store_id,unit,base_quantity,sync_uuid)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`);
     const upd=db.prepare('UPDATE products SET stock=stock-? WHERE id=? AND store_id=? AND stock>=?');
     for(const x of saleItems) {
-     ins.run(saleId,x.id,x.name,x.price,x.quantity,x.subtotal,storeId,x.unit||'piece',x.stockUnits);
+     const lineUuid=crypto.randomUUID();
+     if (!x.sync_uuid) throw new Error('Product sync identity is missing: '+x.name);
+     ins.run(saleId,x.id,x.name,x.price,x.quantity,x.subtotal,storeId,x.unit||'piece',x.stockUnits,lineUuid);
      const r=upd.run(x.stockUnits,x.id,storeId,x.stockUnits);
      if(!r.changes) throw new Error('تعذر تحديث المخزون');
     }
+    const deltaMap=new Map();
+    for (const x of saleItems) {
+     const productUuid=x.sync_uuid;
+     const next=(deltaMap.get(productUuid)||0)-Number(x.stockUnits);
+     deltaMap.set(productUuid,Math.round(next*1000)/1000);
+    }
+    const stockDeltas=[...deltaMap.entries()]
+     .filter(([,delta])=>delta!==0)
+     .map(([product_sync_uuid,delta])=>({product_sync_uuid,delta}));
+
+    nrsEnqueueSaleSnapshot(storeId,saleId,stockDeltas);
+
     db.exec('COMMIT');
     return send(res,201,{ok:true,saleId,total});
    } catch(e) { db.exec('ROLLBACK'); throw e; }

@@ -598,6 +598,10 @@ fetch('/api/status').then(r=>r.json()).then(info=>{
     <div class="section-head"><h2>🔎 البحث والباركود</h2><span class="muted">بيع سريع</span></div>
     <input id="search" placeholder="اسم المنتج أو الباركود" autocomplete="off">
     <div class="actions"><button id="scan">📷 مسح بالكاميرا</button><button class="secondary" id="stop">إيقاف الكاميرا</button></div>
+    <select id="cameraSelect" aria-label="اختيار الكاميرا"
+      style="width:100%;margin-top:8px;padding:12px;border-radius:10px">
+      <option value="">اختيار الكاميرا...</option>
+    </select>
     <video id="video" playsinline></video><div id="scanStatus" class="status"></div>
   </section>
 
@@ -1596,47 +1600,107 @@ $('closeDailySales').onclick=async()=>{
 };
 
 
-$('scan').onclick=async()=>{
- try{
-  if(!navigator.mediaDevices?.getUserMedia)
-   throw Error('الكاميرا غير متاحة. افتح التطبيق من Chrome عبر localhost أو HTTPS.');
-  stream=await navigator.mediaDevices.getUserMedia({
-   video:{facingMode:{ideal:'environment'}},audio:false
-  });
-  const video=$('video');
-  video.srcObject=stream;
-  video.style.display='block';
-  await video.play();
-  scanning=true;
 
-  if('BarcodeDetector' in window){
-   let formats=['qr_code','ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','codabar','data_matrix'];
-   try{
-    if(BarcodeDetector.getSupportedFormats){
-     const supported=await BarcodeDetector.getSupportedFormats();
-     formats=formats.filter(f=>supported.includes(f));
+async function refreshCameraChoices(activeStream, preferredId='') {
+  const select=$('cameraSelect');
+  if(!select) return;
+
+  try {
+    const devices=await navigator.mediaDevices.enumerateDevices();
+    const cameras=devices.filter(d=>d.kind==='videoinput');
+    const track=activeStream?.getVideoTracks?.()[0];
+    const activeId=track?.getSettings?.().deviceId || preferredId || '';
+
+    select.innerHTML='';
+    const placeholder=document.createElement('option');
+    placeholder.value='';
+    placeholder.textContent='اختيار الكاميرا...';
+    select.appendChild(placeholder);
+
+    cameras.forEach((camera,index)=>{
+      const option=document.createElement('option');
+      option.value=camera.deviceId;
+      option.textContent=camera.label || ('كاميرا '+(index+1));
+      select.appendChild(option);
+    });
+
+    select.disabled=cameras.length===0;
+    if(activeId && cameras.some(c=>c.deviceId===activeId)) {
+      select.value=activeId;
+    } else {
+      select.value='';
     }
-   }catch(e){}
-   detector=new BarcodeDetector({formats});
-   msg('scanStatus','الكاميرا جاهزة. وجّهها نحو QR أو الباركود.');
-   scanFrame();
-  }else if(window.ZXingBrowser?.BrowserMultiFormatReader){
-   msg('scanStatus','القارئ البديل يعمل؛ وجّه الكاميرا نحو الرمز.');
-   window.__dzZxingReader=new ZXingBrowser.BrowserMultiFormatReader();
-   window.__dzZxingReader.decodeFromVideoElement(video,(result,err,controls)=>{
-    if(controls)window.__dzZxingControls=controls;
-    if(!scanning||!result)return;
-    handleScannedCode(result.getText());
-   });
-  }else{
-   stopScan();
-   throw Error('القارئ غير مدعوم والمتصفح لم يحمّل القارئ البديل. افتح الإنترنت وحدّث Chrome.');
+  } catch(e) {
+    msg('scanStatus','تعذر عرض قائمة الكاميرات: '+e.message);
   }
- }catch(e){
+}
+
+async function startScan(cameraId='') {
   stopScan();
-  msg('scanStatus','تعذر تشغيل القارئ: '+(e.message||e));
- }
-};
+
+  try {
+    if(!navigator.mediaDevices?.getUserMedia)
+      throw Error('الكاميرا غير متاحة. افتح الصفحة عبر HTTPS أو localhost.');
+
+    const videoConstraints=cameraId
+      ? {deviceId:{exact:cameraId}}
+      : {facingMode:{ideal:'environment'}};
+
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:videoConstraints,
+      audio:false
+    });
+
+    const video=$('video');
+    video.srcObject=stream;
+    video.style.display='block';
+    await video.play();
+    scanning=true;
+
+    await refreshCameraChoices(stream,cameraId);
+
+    if('BarcodeDetector' in window){
+      let formats=[
+        'qr_code','ean_13','ean_8','upc_a','upc_e',
+        'code_128','code_39','itf','codabar','data_matrix'
+      ];
+      try {
+        if(BarcodeDetector.getSupportedFormats){
+          const supported=await BarcodeDetector.getSupportedFormats();
+          formats=formats.filter(f=>supported.includes(f));
+        }
+      } catch(e) {}
+
+      if(!formats.length) throw Error('لا توجد صيغ باركود مدعومة.');
+      detector=new BarcodeDetector({formats});
+      msg('scanStatus','الكاميرا جاهزة. وجّهها نحو الباركود.');
+      scanFrame();
+
+    } else if(window.ZXingBrowser?.BrowserMultiFormatReader){
+      msg('scanStatus','قارئ ZXing جاهز. وجّه الكاميرا نحو الرمز.');
+      window.__dzZxingReader=new ZXingBrowser.BrowserMultiFormatReader();
+      window.__dzZxingReader.decodeFromVideoElement(video,(result,err,controls)=>{
+        if(controls) window.__dzZxingControls=controls;
+        if(!scanning||!result) return;
+        handleScannedCode(result.getText());
+      });
+
+    } else {
+      throw Error('قارئ الباركود غير متاح في المتصفح.');
+    }
+  } catch(e) {
+    stopScan();
+    msg('scanStatus','تعذر تشغيل الكاميرا: '+(e.message||e));
+  }
+}
+
+$('scan').onclick=()=>startScan($('cameraSelect')?.value||'');
+
+$('cameraSelect')?.addEventListener('change',e=>{
+  if(!scanning) return;
+  startScan(e.target.value||'');
+});
+
 
 let dzLastCode='',dzLastAt=0;
 async function handleScannedCode(code){
